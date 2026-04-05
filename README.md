@@ -1,25 +1,32 @@
-# DevFlow
+# 🤖 DevFlow
 
-DevFlow is an autonomous coding orchestrator. It picks up Jira tickets, dispatches an AI agent ([OpenCode](https://opencode.ai)) to analyze and implement the work across one or more GitHub repositories, creates pull requests, and reacts to review feedback — all without human intervention.
+DevFlow is an autonomous coding orchestrator. Drop a ticket in Jira, and an AI agent ([OpenCode](https://opencode.ai)) picks it up, reads your codebase, writes the code, opens pull requests — and even fixes review comments on its own.
 
-## How it works
+No human in the loop. You review the PR when it's ready.
 
-1. **Polls Jira** every minute for eligible tickets in a configured epic.
-2. **Information collection** — an agent run analyzes the ticket and the codebase to build an implementation plan. If something is unclear, the ticket is blocked with a Jira comment asking for clarification.
-3. **Implementation** — a second agent run writes the code, runs tests, and reports completion. The orchestrator commits, pushes, and opens one PR per modified repository.
-4. **Review loop** — when a reviewer posts an inline comment on a PR, DevFlow detects it and dispatches a new agent run to address the feedback, then pushes the fix.
-5. **Merge detection** — once all PRs are merged, the ticket is automatically moved to "To Validate".
+## 🧠 What the agent actually does
 
-DevFlow is **stateless** (no database). It re-discovers ticket and PR state from Jira and GitHub on every poll cycle. The only in-process state is a single volatile reference tracking the currently active agent run.
+DevFlow doesn't just blindly generate code. It works in two phases, like a developer would:
 
-## Quick start
+1. **📖 It reads first.** The agent explores your codebase, understands the existing architecture, checks the coding conventions, and builds an implementation plan. If the ticket is vague or missing context, it asks questions directly in a Jira comment — and waits for your answer before moving on.
+
+2. **💻 Then it codes.** It writes the implementation, runs the linter, runs the tests, fixes what breaks. When it's done, DevFlow opens a pull request per repository — with a clean diff ready for review.
+
+And it doesn't stop there:
+
+- **🔁 It handles review feedback.** Post an inline comment on the PR, and DevFlow picks it up, spins up a new agent run to address your remarks, and pushes the fix to the same branch.
+- **✅ It tracks merges.** Once all PRs are merged, the Jira ticket moves to "To Validate" automatically. No manual status updates.
+
+The whole system is **stateless** — no database, no in-memory store. DevFlow re-discovers everything from Jira and GitHub on every poll cycle. If it restarts, it picks up right where it left off.
+
+## 🚀 Quick start
 
 ```bash
 cp .env.example .env   # fill in your credentials
 docker compose up --build
 ```
 
-## Configuration
+## ⚙️ Configuration
 
 All configuration is done through environment variables in `.env`. See [`.env.example`](.env.example) for the full list.
 
@@ -57,7 +64,7 @@ DevFlow uses OpenCode as its agent runtime. Configure the LLM provider with one 
 | `OPENAI_API_KEY` | OpenAI key (if using `openai/*` models) |
 | `ANTHROPIC_API_KEY` | Anthropic key (if using `anthropic/*` models) |
 
-## Architecture overview
+## 🏗️ Architecture overview
 
 ```
 ┌──────────────┐   poll    ┌───────┐
@@ -78,7 +85,41 @@ DevFlow uses OpenCode as its agent runtime. Configure the LLM provider with one 
 - The **agent** is sandboxed — no access to Jira/GitHub credentials. It communicates only through structured HTTP callbacks.
 - Both containers share a workspace volume where repositories are checked out.
 
-## Detailed documentation
+## 🔒 Security
+
+DevFlow runs an AI agent with shell access — so security is not an afterthought. The architecture is designed around one principle: **the agent never touches your secrets**.
+
+### 🔑 Credential isolation
+
+The agent container has **zero access** to your GitHub token, Jira credentials, or any `.env` variable. The only secret it receives is a Copilot LLM token (scoped exclusively to model inference — no `repo`, no `admin`, no API access).
+
+All Git operations (clone, fetch, push) are performed by the orchestrator, which injects credentials per-command via `git -c http.extraHeader`. Nothing is ever written to `.git/config` or persisted on disk.
+
+### 🌐 Network segmentation
+
+The system uses two Docker networks:
+
+- **`control`** (internal) — orchestrator-to-agent communication only. Not reachable from outside.
+- **`egress`** — outbound access to Jira, GitHub, and LLM APIs.
+
+The agent cannot reach the orchestrator's secrets, and the internal endpoints are not exposed beyond the Docker host.
+
+### 🧱 Agent sandboxing
+
+Even though the agent has shell access inside its container, several guardrails are in place:
+
+- **No credentials available** — there is nothing to exfiltrate.
+- **Path traversal protection** — tool calls validate all paths against an allowed root directory.
+- **Branch name enforcement** — all branches must start with `devflow/`, preventing writes to protected branches.
+- **Run ID matching** — every agent callback is validated against the active run ID, preventing event spoofing.
+- **15-minute hard timeout** — the agent process is killed after 15 minutes (SIGTERM, then SIGKILL after 5s). The orchestrator has a backup stale-run detector in case the timeout fails.
+- **Behavioral rules** — the agent is instructed never to start applications, never to kill its own runner, and to only run compilation, lint, and test commands.
+
+### ✅ Request validation
+
+All HTTP payloads from the agent are validated with Bean Validation (`@Valid`, `@NotNull`, `@NotBlank`) before processing. Malformed events are rejected.
+
+## 📚 Detailed documentation
 
 - [Architecture](docs/architecture.md) — hexagonal design, stateless model, timeout mechanisms, security boundaries
 - [Workflow](docs/workflow.md) — end-to-end flow diagram (Mermaid)
@@ -86,7 +127,7 @@ DevFlow uses OpenCode as its agent runtime. Configure the LLM provider with one 
 - [Agent callbacks](docs/agent-callbacks.md) — HTTP contract between agent and orchestrator
 - [Event catalog](docs/events.md) — all commands and events in the system
 
-## License
+## 📄 License
 
 DevFlow is licensed under the [Business Source License 1.1](LICENSE).
 
