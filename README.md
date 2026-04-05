@@ -88,4 +88,8 @@ DevFlow uses OpenCode as its agent runtime. Configure the LLM provider with one 
 
 ## License
 
-Private project.
+DevFlow is licensed under the [Business Source License 1.1](LICENSE).
+
+- **Non-commercial use**: free
+- **Commercial production use**: requires a paid license — contact naofel.eal@gmail.com
+- **Change Date**: April 5, 2030 — after which the code becomes [Apache 2.0](https://www.apache.org/licenses/LICENSE-2.0)
