@@ -5,6 +5,8 @@ import io.devflow.application.command.ticketing.TransitionWorkItemCommand;
 import io.devflow.application.port.support.JsonCodec;
 import io.devflow.application.port.ticketing.TicketingPort;
 import io.devflow.domain.exception.DomainException;
+import io.devflow.domain.ticketing.IncomingComment;
+import io.devflow.domain.ticketing.WorkItem;
 import io.devflow.domain.ticketing.WorkItemTransitionTarget;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -20,6 +22,7 @@ import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.StringJoiner;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -40,7 +43,9 @@ public class JiraTicketingAdapter implements TicketingPort {
     private static final String API_ISSUE_PATH_TEMPLATE = "/rest/api/3/issue/%s";
     private static final String API_COMMENT_PATH_TEMPLATE = "/rest/api/3/issue/%s/comment";
     private static final String API_TRANSITIONS_PATH_TEMPLATE = "/rest/api/3/issue/%s/transitions";
+    private static final String QUERY_WORK_ITEM_FIELDS = "?fields=summary,description,status,issuetype,labels,updated";
     private static final String QUERY_FIELDS_STATUS = "?fields=status";
+    private static final String QUERY_COMMENT_PAGE_TEMPLATE = "?startAt=%d&maxResults=%d";
     private static final String ADF_BODY = "body";
     private static final String ADF_TYPE = "type";
     private static final String ADF_DOC = "doc";
@@ -59,6 +64,9 @@ public class JiraTicketingAdapter implements TicketingPort {
     private static final String PAYLOAD_TRANSITIONS = "transitions";
     private static final String PAYLOAD_TRANSITION = "transition";
     private static final String PAYLOAD_ID = "id";
+    private static final String PAYLOAD_START_AT = "startAt";
+    private static final String PAYLOAD_MAX_RESULTS = "maxResults";
+    private static final String PAYLOAD_TOTAL = "total";
     private static final String PAYLOAD_TO = "to";
     private static final Pattern URL_PATTERN = Pattern.compile("https?://\\S+");
 
@@ -71,6 +79,9 @@ public class JiraTicketingAdapter implements TicketingPort {
 
     @Inject
     JsonCodec jsonCodec;
+
+    @Inject
+    JiraPayloadMapper jiraPayloadMapper;
 
     @Override
     public void comment(CommentWorkItemCommand command) {
@@ -134,6 +145,45 @@ public class JiraTicketingAdapter implements TicketingPort {
         LOG.infof("Transitioned Jira ticket %s to status %s", command.workItemKey(), targetStatus);
     }
 
+    @Override
+    public Optional<WorkItem> loadWorkItem(String workItemSystem, String workItemKey) {
+        if (!JiraSystem.matches(workItemSystem)) {
+            return Optional.empty();
+        }
+
+        HttpRequest request = baseRequest(API_ISSUE_PATH_TEMPLATE.formatted(workItemKey) + QUERY_WORK_ITEM_FIELDS)
+            .GET()
+            .build();
+        return Optional.of(jiraPayloadMapper.toWorkItem(sendJson(request, "Unable to read Jira issue")));
+    }
+
+    @Override
+    public List<IncomingComment> listComments(String workItemSystem, String workItemKey) {
+        if (!JiraSystem.matches(workItemSystem)) {
+            return List.of();
+        }
+
+        List<IncomingComment> comments = new ArrayList<>();
+        int startAt = 0;
+        int pageSize = 100;
+        boolean lastPage = false;
+        while (!lastPage) {
+            HttpRequest request = baseRequest(API_COMMENT_PATH_TEMPLATE.formatted(workItemKey) + QUERY_COMMENT_PAGE_TEMPLATE.formatted(startAt, pageSize))
+                .GET()
+                .build();
+            Map<String, Object> payload = sendJson(request, "Unable to read Jira comments");
+            List<IncomingComment> page = jiraPayloadMapper.extractComments(payload, workItemKey);
+            comments.addAll(page);
+
+            int total = intValue(payload.get(PAYLOAD_TOTAL), comments.size());
+            int responseStartAt = intValue(payload.get(PAYLOAD_START_AT), startAt);
+            int responsePageSize = Math.max(1, intValue(payload.get(PAYLOAD_MAX_RESULTS), pageSize));
+            startAt = responseStartAt + responsePageSize;
+            lastPage = page.isEmpty() || comments.size() >= total;
+        }
+        return comments;
+    }
+
     private String currentStatus(String workItemKey) {
         HttpRequest request = baseRequest(API_ISSUE_PATH_TEMPLATE.formatted(workItemKey) + QUERY_FIELDS_STATUS)
             .GET()
@@ -187,6 +237,20 @@ public class JiraTicketingAdapter implements TicketingPort {
 
     private boolean matchesStatus(String currentStatus, String targetStatus) {
         return currentStatus != null && targetStatus != null && currentStatus.equalsIgnoreCase(targetStatus);
+    }
+
+    private int intValue(Object value, int fallback) {
+        if (value instanceof Number current) {
+            return current.intValue();
+        }
+        if (value instanceof String current) {
+            try {
+                return Integer.parseInt(current);
+            } catch (NumberFormatException ignored) {
+                return fallback;
+            }
+        }
+        return fallback;
     }
 
     private HttpRequest.Builder baseRequest(String path) {

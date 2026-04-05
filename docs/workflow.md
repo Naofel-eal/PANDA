@@ -2,107 +2,90 @@
 
 Canonical end-to-end workflow for the orchestrator.
 
-Dans l'implementation actuelle, tout nouveau ticket eligible passe d'abord par un run agent `INFORMATION_COLLECTION`.
-Ce run ne code pas encore: il valide la comprehension, detecte les ambiguites et emet soit `INPUT_REQUIRED`, soit `COMPLETED`, ce qui declenche ensuite la phase `IMPLEMENTATION`.
+Dans l'implementation actuelle (v0 stateless):
+
+- tout nouveau ticket eligible passe d'abord par un run agent `INFORMATION_COLLECTION`
+- ce run ne code pas encore: il valide la comprehension, detecte les ambiguites
+- il emet soit `INPUT_REQUIRED` (ticket bloque), soit `COMPLETED` (chaine vers `IMPLEMENTATION`)
+- l'orchestrateur est stateless: pas de base de donnees, un seul `volatile currentRun`
+- l'intake est polling-only depuis Jira et GitHub
 
 ```mermaid
 flowchart TD
-    start([Workflow signal received])
+    start([Polling cycle])
     ignored([No action])
-    done([Done])
+    done([To Validate])
+
+    subgraph polling["Polling Discovery"]
+        jiraPoll{Jira: ticket in To Do or Blocked?}
+        githubPoll{GitHub: new review comment or merged PR?}
+        busy{Agent busy?}
+    end
 
     subgraph info["Information Collection"]
         eligible{Work item eligible?}
-        enoughInfo{Enough information to start?}
-        envAvailable{Execution environment available?}
-        waitInfo[[Blocked: waiting for missing information]]
-        waitEnv[[Blocked: waiting for execution environment]]
+        alreadyAssessed{Already assessed and no new info?}
+        enoughInfo{Enough information?}
+        postEligibility[Post eligibility comment on ticket]
     end
 
     subgraph impl["Implementation"]
-        prepareWorkspace[Provision workspace]
-        pullRepos[Pull repositories]
-        createBranch[Create or reuse branch]
-        implement[Implement solution]
-        localChecks[Run local checks]
-        publishChanges[Push changes]
-        openOrUpdateChange[Create or update code change]
-        notifyDev[Comment work item and move it to technical review]
-        waitTech[[Waiting for technical review]]
+        implement[Agent implements solution]
+        publishChanges[Orchestrator: commit, push, create PR]
+        moveToReview[Transition ticket to To Review]
     end
 
     subgraph tech["Technical Validation"]
-        reviewComment{New technical review comment?}
-        canResolveTech{Enough information to resolve the technical comment?}
-        waitTechInfo[[Blocked: waiting for technical clarification]]
-        merged{Code change merged?}
-        waitMerge[[Waiting for merge or further review]]
+        reviewComment{New review comment on devflow PR?}
+        commentAfterCommit{Comment after last commit?}
     end
 
-    subgraph biz["Business Validation"]
-        notifyBiz[Comment work item and move it to business validation]
-        waitBiz[[Waiting for business validation]]
-        validated{Business validated?}
-        bizComment{New business comment?}
-        canResolveBiz{Enough information to resolve the business comment?}
-        waitBizInfo[[Blocked: waiting for business clarification]]
+    subgraph merge["Merge Detection"]
+        merged{devflow PR merged?}
+        ticketInReview{Ticket in To Review?}
+        moveToValidate[Transition ticket to To Validate]
     end
 
-    start --> signal{Signal type?}
+    subgraph blocked["Blocked Handling"]
+        inputRequired[Agent: INPUT_REQUIRED]
+        moveToBlocked[Transition ticket to Blocked + comment]
+        newUserComment{New user comment after DevFlow comment?}
+    end
 
-    signal -- New work item --> eligible
-    signal -- Comment on blocked work item --> enoughInfo
-    signal -- Execution environment available --> envAvailable
-    signal -- Technical review event --> reviewComment
-    signal -- Code change merged --> merged
-    signal -- Business validation status --> validated
-    signal -- Business comment --> bizComment
+    start --> busy
+    busy -- yes --> ignored
+    busy -- no --> jiraPoll
 
-    eligible -- no --> ignored
+    jiraPoll -- To Do ticket found --> eligible
+    jiraPoll -- Blocked ticket found --> newUserComment
+    jiraPoll -- nothing --> githubPoll
+
+    eligible -- no --> alreadyAssessed
+    alreadyAssessed -- yes --> ignored
+    alreadyAssessed -- no --> postEligibility --> ignored
     eligible -- yes --> enoughInfo
 
-    enoughInfo -- no --> waitInfo
-    enoughInfo -- yes --> envAvailable
+    enoughInfo -- yes --> implement
+    enoughInfo -- no --> inputRequired
 
-    waitInfo -. new ticket comment .-> enoughInfo
+    implement -- COMPLETED --> publishChanges --> moveToReview
+    implement -- INPUT_REQUIRED --> inputRequired
+    implement -- FAILED --> moveToBlocked
 
-    envAvailable -- no --> waitEnv
-    envAvailable -- yes --> prepareWorkspace
+    inputRequired --> moveToBlocked
 
-    waitEnv -. environment available .-> prepareWorkspace
+    newUserComment -- yes --> implement
+    newUserComment -- no --> ignored
 
-    prepareWorkspace --> pullRepos --> createBranch --> implement --> localChecks --> publishChanges --> openOrUpdateChange --> notifyDev --> waitTech
+    githubPoll -- review comment --> reviewComment
+    githubPoll -- merged PR --> merged
+    githubPoll -- nothing --> ignored
 
-    waitTech -. review comment .-> reviewComment
-    waitTech -. merge event .-> merged
+    reviewComment -- yes --> commentAfterCommit
+    commentAfterCommit -- yes --> implement
+    commentAfterCommit -- no --> ignored
 
-    reviewComment -- no --> waitMerge
-    reviewComment -- yes --> canResolveTech
-
-    canResolveTech -- no --> waitTechInfo
-    canResolveTech -- yes --> prepareWorkspace
-
-    waitTechInfo -. new PR/MR comment or updated ticket .-> canResolveTech
-
-    merged -- no --> waitMerge
-    merged -- yes --> notifyBiz
-
-    waitMerge -. review comment .-> reviewComment
-    waitMerge -. merge event .-> merged
-
-    notifyBiz --> waitBiz
-
-    waitBiz -. validation result .-> validated
-    waitBiz -. business comment .-> bizComment
-
-    validated -- yes --> done
-    validated -- no --> bizComment
-
-    bizComment -- no --> waitBiz
-    bizComment -- yes --> canResolveBiz
-
-    canResolveBiz -- no --> waitBizInfo
-    canResolveBiz -- yes --> prepareWorkspace
-
-    waitBizInfo -. new business comment .-> canResolveBiz
+    merged -- yes --> ticketInReview
+    ticketInReview -- yes --> moveToValidate --> done
+    ticketInReview -- no --> ignored
 ```

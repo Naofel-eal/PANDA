@@ -2,7 +2,8 @@ export const HTTP = Object.freeze({
   defaultPort: 8081,
   eventTimeoutMs: 10_000,
   cancelKillDelayMs: 5_000,
-  logTailMaxChars: 16_000
+  logTailMaxChars: 16_000,
+  maxRunDurationMs: 15 * 60 * 1_000
 })
 
 export const AgentCommandType = Object.freeze({

@@ -2,19 +2,6 @@ quarkus:
   http:
     host: 0.0.0.0
     port: 8080
-  datasource:
-    db-kind: postgresql
-    username: ${DB_USERNAME:devflow}
-    password: ${DB_PASSWORD:devflow}
-    jdbc:
-      url: ${DB_JDBC_URL:jdbc:postgresql://postgres:5432/devflow}
-  hibernate-orm:
-    database:
-      generation: validate
-    log:
-      sql: false
-  flyway:
-    migrate-at-start: true
   swagger-ui:
     always-include: true
   smallrye-openapi:
@@ -24,6 +11,7 @@ quarkus:
 devflow:
   agent-runtime:
     base-url: ${AGENT_BASE_URL:http://agent:8081}
+    max-run-duration-minutes: ${AGENT_MAX_RUN_DURATION_MINUTES:20}
   agent:
     model: ${OPENCODE_MODEL:}
     small-model: ${OPENCODE_SMALL_MODEL:}
@@ -31,8 +19,6 @@ devflow:
     anthropic-api-key: ${ANTHROPIC_API_KEY:}
     gemini-api-key: ${GEMINI_API_KEY:}
     copilot-github-token: ${COPILOT_GITHUB_TOKEN:}
-  workflow:
-    definition-id: default
   workspace:
     run-root: ${DEVFLOW_WORKSPACE_RUN_ROOT:/workspace/runs}
   jira:

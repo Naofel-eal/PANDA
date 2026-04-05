@@ -2,10 +2,22 @@ package io.devflow.infrastructure.ticketing.jira;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import io.devflow.application.command.workflow.WorkflowSignalCommand;
-import io.devflow.application.usecase.WorkflowSignalService;
+import io.devflow.application.command.agent.CancelAgentRunCommand;
+import io.devflow.application.command.agent.StartAgentRunCommand;
+import io.devflow.application.command.ticketing.CommentWorkItemCommand;
+import io.devflow.application.command.workspace.PrepareWorkspaceCommand;
+import io.devflow.application.port.agent.AgentRuntimePort;
+import io.devflow.application.port.codehost.CodeHostPort;
+import io.devflow.application.port.ticketing.TicketingPort;
+import io.devflow.application.runtime.DevFlowRuntime;
+import io.devflow.application.service.EligibilityService;
+import io.devflow.application.service.WorkspaceLayoutService;
+import io.devflow.domain.ticketing.IncomingComment;
 import io.devflow.domain.ticketing.WorkItem;
-import io.devflow.domain.workflow.WorkflowSignalType;
+import io.devflow.domain.workflow.WorkflowPhase;
+import io.devflow.domain.workspace.PreparedWorkspace;
+import io.devflow.domain.workspace.RepositoryWorkspace;
+import io.devflow.infrastructure.agent.opencode.OpenCodeRuntimeConfig;
 import io.quarkus.scheduler.Scheduled;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -18,10 +30,25 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Base64;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.UUID;
 import org.jboss.logging.Logger;
 
+/**
+ * Stateless Jira ticket poller. Uses DevFlowRuntime (volatile currentRun) instead of
+ * WorkflowStore/AgentRunStore. Dispatches agent runs directly (no outbox, no signal service).
+ *
+ * <p>Poll cycle:
+ * <ol>
+ *   <li>If busy → skip entirely</li>
+ *   <li>Search epic for "To Do" tickets → pick first eligible → start info-collection agent run</li>
+ *   <li>If not busy after step 2, search epic for "Blocked" tickets → check for new user comments → start agent</li>
+ * </ol>
+ */
 @ApplicationScoped
 public class JiraTicketPollingJob {
 
@@ -37,17 +64,21 @@ public class JiraTicketPollingJob {
     private static final String CONTENT_TYPE_JSON = "application/json";
     private static final String AUTH_SCHEME_BASIC = "Basic ";
     private static final String SEARCH_ISSUES_PATH = "/rest/api/3/search/jql";
-    private static final String ISSUE_FIELDS = "summary,description,status,issuetype,labels,updated";
-    private static final String SIGNAL_ID_PREFIX = "jira-poll:issue:";
+    private static final String MYSELF_PATH = "/rest/api/3/myself";
     private static final String PAYLOAD_JQL = "jql";
     private static final String PAYLOAD_FIELDS = "fields";
     private static final String PAYLOAD_MAX_RESULTS = "maxResults";
     private static final String PAYLOAD_NEXT_PAGE_TOKEN = "nextPageToken";
-    private static final String JQL_PARENT_TEMPLATE = "parent = \"%s\" AND status = \"%s\"";
+    private static final String JQL_PARENT_STATUS_TEMPLATE = "parent = \"%s\" AND status = \"%s\"";
+    private static final String DEVFLOW_COMMENT_MARKER = "Devflow marked this ticket as blocked";
+    private static final String DEVFLOW_NOT_ELIGIBLE_MARKER = "Devflow marked this ticket as blocked because it is missing:";
+    private static final long ELIGIBILITY_REASSESSMENT_GRACE_SECONDS = 60;
 
     private final HttpClient client = HttpClient.newBuilder()
         .connectTimeout(HTTP_CONNECT_TIMEOUT)
         .build();
+
+    private String devflowAccountId;
 
     @Inject
     JiraConfig config;
@@ -56,10 +87,30 @@ public class JiraTicketPollingJob {
     JiraPayloadMapper jiraPayloadMapper;
 
     @Inject
-    WorkflowSignalService workflowSignalService;
+    TicketingPort ticketingPort;
+
+    @Inject
+    DevFlowRuntime runtime;
+
+    @Inject
+    AgentRuntimePort agentRuntimePort;
+
+    @Inject
+    CodeHostPort codeHostPort;
+
+    @Inject
+    WorkspaceLayoutService workspaceLayoutService;
+
+    @Inject
+    EligibilityService eligibilityService;
+
+    @Inject
+    OpenCodeRuntimeConfig agentRuntimeConfig;
 
     @Inject
     ObjectMapper objectMapper;
+
+    // ---- Scheduled entry point ----
 
     @Scheduled(
         every = "${devflow.jira.poll-interval-minutes:1}m",
@@ -69,73 +120,379 @@ public class JiraTicketPollingJob {
         if (!isPollingConfigured()) {
             return;
         }
+        resolveDevflowAccountId();
+        cancelStaleRunIfNeeded();
+        if (runtime.isBusy()) {
+            LOG.info("Skipping Jira ticket polling because an agent run is active");
+            return;
+        }
 
-        LOG.infof(
-            "Polling Jira epic %s for tickets in status '%s'",
-            config.epicKey(),
-            config.todoStatus()
+        LOG.infof("Polling Jira epic %s for tickets in status '%s'", config.epicKey(), config.todoStatus());
+        pollTodoTickets();
+
+        if (!runtime.isBusy()) {
+            pollBlockedTickets();
+        }
+    }
+
+    // ---- Stale run detection ----
+
+    private void cancelStaleRunIfNeeded() {
+        Duration maxDuration = Duration.ofMinutes(agentRuntimeConfig.maxRunDurationMinutes());
+        if (!runtime.isStale(maxDuration)) {
+            return;
+        }
+        DevFlowRuntime.RunContext stale = runtime.current();
+        if (stale == null) {
+            return;
+        }
+        LOG.warnf(
+            "Run %s for ticket %s has been active for more than %d minutes — cancelling",
+            stale.agentRunId(), stale.ticketKey(), agentRuntimeConfig.maxRunDurationMinutes()
         );
+        try {
+            agentRuntimePort.cancelRun(new CancelAgentRunCommand(stale.agentRunId()));
+        } catch (RuntimeException exception) {
+            LOG.warnf(exception, "Failed to cancel stale agent run %s — clearing locally", stale.agentRunId());
+        }
+        runtime.clearRunIfMatches(stale.agentRunId());
+    }
+
+    // ---- "To Do" ticket handling ----
+
+    private void pollTodoTickets() {
         String nextPageToken = null;
         boolean lastPage = false;
-        while (!lastPage) {
-            Map<String, Object> payload = fetchIssuesPage(nextPageToken);
+
+        while (!lastPage && !runtime.isBusy()) {
+            Map<String, Object> payload = fetchIssuesPage(config.todoStatus(), nextPageToken);
             List<Map<String, Object>> issues = jiraPayloadMapper.extractIssues(payload);
             LOG.infof(
-                "Fetched %d Jira tickets from epic %s (nextPageToken=%s)",
-                issues.size(),
-                config.epicKey(),
+                "Fetched %d Jira 'To Do' tickets from epic %s (nextPageToken=%s)",
+                issues.size(), config.epicKey(),
                 nextPageToken == null ? "<initial>" : nextPageToken
             );
 
-            issues.forEach(this::dispatchIssueSignal);
+            for (Map<String, Object> issue : issues) {
+                if (runtime.isBusy()) {
+                    return;
+                }
+                if (tryStartTodoTicket(issue)) {
+                    return;
+                }
+            }
 
             if (issues.isEmpty()) {
                 break;
             }
             nextPageToken = jiraPayloadMapper.extractNextPageToken(payload);
-            lastPage = jiraPayloadMapper.isLastPage(payload) || nextPageToken == null || nextPageToken.isBlank();
+            lastPage = jiraPayloadMapper.isLastPage(payload)
+                || nextPageToken == null
+                || nextPageToken.isBlank();
         }
     }
 
-    private boolean isPollingConfigured() {
-        return !isBlank(config.baseUrl())
-            && !isBlank(config.userEmail())
-            && !isBlank(config.apiToken())
-            && !isBlank(config.epicKey());
+    private boolean tryStartTodoTicket(Map<String, Object> issue) {
+        WorkItem workItem = jiraPayloadMapper.toWorkItem(issue);
+        EligibilityService.EligibilityDecision decision = eligibilityService.evaluate(workItem);
+        if (!decision.hasEnoughInformation()) {
+            List<IncomingComment> comments = safeLoadComments(workItem.key());
+            if (shouldSkipIneligibleTicket(issue, comments)) {
+                LOG.debugf(
+                    "Ticket %s still not eligible and no new information since last assessment, skipping",
+                    workItem.key()
+                );
+                return false;
+            }
+            LOG.infof(
+                "Ticket %s is not eligible: missing %s",
+                workItem.key(), decision.missingFields()
+            );
+            postTicketComment(
+                workItem.key(),
+                "Devflow marked this ticket as blocked because it is missing: "
+                    + String.join(", ", decision.missingFields())
+                    + ". Please add the missing information and move the ticket back to '"
+                    + config.todoStatus() + "'."
+            );
+            return false;
+        }
+
+        LOG.infof("Starting agent run for 'To Do' ticket %s (%s)", workItem.key(), workItem.title());
+        List<IncomingComment> comments = safeLoadComments(workItem.key());
+        startAgentRun(workItem, comments, WorkflowPhase.INFORMATION_COLLECTION);
+        return true;
     }
 
-    private void dispatchIssueSignal(Map<String, Object> issue) {
+    // ---- "Blocked" ticket handling ----
+
+    private void pollBlockedTickets() {
+        String nextPageToken = null;
+        boolean lastPage = false;
+
+        while (!lastPage && !runtime.isBusy()) {
+            Map<String, Object> payload = fetchIssuesPage(config.blockedStatus(), nextPageToken);
+            List<Map<String, Object>> issues = jiraPayloadMapper.extractIssues(payload);
+            if (issues.isEmpty()) {
+                break;
+            }
+            LOG.infof("Fetched %d Jira 'Blocked' tickets from epic %s", issues.size(), config.epicKey());
+
+            for (Map<String, Object> issue : issues) {
+                if (runtime.isBusy()) {
+                    return;
+                }
+                if (tryResumeBlockedTicket(issue)) {
+                    return;
+                }
+            }
+
+            nextPageToken = jiraPayloadMapper.extractNextPageToken(payload);
+            lastPage = jiraPayloadMapper.isLastPage(payload)
+                || nextPageToken == null
+                || nextPageToken.isBlank();
+        }
+    }
+
+    private boolean tryResumeBlockedTicket(Map<String, Object> issue) {
         WorkItem workItem = jiraPayloadMapper.toWorkItem(issue);
-        Instant occurredAt = jiraPayloadMapper.extractIssueUpdatedAt(issue);
-        String sourceEventId = buildSourceEventId(workItem.key(), occurredAt);
+        List<IncomingComment> comments = safeLoadComments(workItem.key());
+        if (comments.isEmpty()) {
+            return false;
+        }
+
+        Optional<IncomingComment> latestDevflowComment = comments.stream()
+            .filter(this::isDevflowComment)
+            .max(Comparator.comparing(this::commentTimestamp));
+
+        Optional<IncomingComment> latestUserComment = comments.stream()
+            .filter(this::isUserComment)
+            .max(Comparator.comparing(this::commentTimestamp));
+
+        if (latestUserComment.isEmpty()) {
+            return false;
+        }
+
+        boolean hasNewUserComment = latestDevflowComment
+            .map(devflowComment -> commentTimestamp(latestUserComment.get()).isAfter(commentTimestamp(devflowComment)))
+            .orElse(true);
+
+        if (!hasNewUserComment) {
+            return false;
+        }
+
         LOG.infof(
-            "Dispatching Jira ticket %s (%s) from epic %s to workflow engine",
-            workItem.key(),
-            workItem.title(),
-            config.epicKey()
+            "Resuming blocked ticket %s — new user comment detected after last DevFlow comment",
+            workItem.key()
+        );
+        startAgentRun(workItem, comments, WorkflowPhase.INFORMATION_COLLECTION);
+        return true;
+    }
+
+    // ---- Agent run dispatch (direct, no outbox) ----
+
+    private void startAgentRun(WorkItem workItem, List<IncomingComment> comments, WorkflowPhase phase) {
+        UUID workflowId = UUID.randomUUID();
+        UUID agentRunId = UUID.randomUUID();
+        String objective = "Analyze and implement work item " + workItem.key();
+
+        runtime.startRun(workflowId, agentRunId, JiraSystem.ID, workItem.key(), phase, objective);
+
+        Map<String, Object> snapshot = buildSnapshot(workflowId, workItem, comments);
+        workspaceLayoutService.ensureDirectories(workflowId);
+
+        Map<String, Object> preparedSnapshot = prepareSnapshotWithWorkspace(workflowId, workItem, snapshot);
+        preparedSnapshot.put("phase", phase.name());
+
+        StartAgentRunCommand command = StartAgentRunCommand.start(
+            UUID.randomUUID(),
+            workflowId,
+            agentRunId,
+            phase,
+            objective,
+            preparedSnapshot
         );
 
-        workflowSignalService.handle(new WorkflowSignalCommand(
-            WorkflowSignalType.WORK_ITEM_UPDATED,
-            JiraSystem.ID,
-            sourceEventId,
-            null,
-            occurredAt,
-            workItem,
-            null,
-            null,
-            null,
-            null
-        ));
+        try {
+            LOG.infof("Dispatching agent run %s for ticket %s, phase %s", agentRunId, workItem.key(), phase);
+            agentRuntimePort.startRun(command);
+        } catch (RuntimeException exception) {
+            LOG.errorf(exception, "Failed to dispatch agent run for ticket %s", workItem.key());
+            runtime.clearRun();
+        }
     }
 
-    private String buildSourceEventId(String workItemKey, Instant occurredAt) {
-        return SIGNAL_ID_PREFIX + workItemKey + ":" + (occurredAt == null ? "unknown" : occurredAt.toString());
+    private Map<String, Object> buildSnapshot(UUID workflowId, WorkItem workItem, List<IncomingComment> comments) {
+        Map<String, Object> snapshot = new LinkedHashMap<>();
+        snapshot.put("workflowId", workflowId.toString());
+        snapshot.put("workItemSystem", JiraSystem.ID);
+        snapshot.put("workItemKey", workItem.key());
+        snapshot.put("workItem", workItem);
+        if (!comments.isEmpty()) {
+            snapshot.put("workItemComments", comments);
+        }
+        return snapshot;
     }
 
-    private Map<String, Object> fetchIssuesPage(String nextPageToken) {
+    private Map<String, Object> prepareSnapshotWithWorkspace(
+        UUID workflowId,
+        WorkItem workItem,
+        Map<String, Object> inputSnapshot
+    ) {
+        Map<String, Object> snapshot = new LinkedHashMap<>(inputSnapshot);
+        List<String> repositories = workItem.repositories().isEmpty()
+            ? codeHostPort.configuredRepositories()
+            : workItem.repositories();
+
+        PreparedWorkspace preparedWorkspace = codeHostPort.prepareWorkspace(
+            new PrepareWorkspaceCommand(workflowId, repositories, Map.of())
+        );
+
+        Map<String, Object> workspace = new LinkedHashMap<>(workspaceLayoutService.describe(workflowId));
+        workspace.put("projectRoot", preparedWorkspace.projectRoot());
+        workspace.put("repositories", preparedWorkspace.repositories().stream()
+            .map(this::toWorkspaceEntry)
+            .toList());
+        snapshot.put("workspace", workspace);
+        snapshot.put("repositories", preparedWorkspace.repositories().stream()
+            .map(RepositoryWorkspace::repository)
+            .toList());
+        return snapshot;
+    }
+
+    private Map<String, Object> toWorkspaceEntry(RepositoryWorkspace workspace) {
+        Map<String, Object> entry = new LinkedHashMap<>();
+        entry.put("repository", workspace.repository());
+        entry.put("projectRoot", workspace.projectRoot());
+        return entry;
+    }
+
+    // ---- Comment detection helpers ----
+
+    private boolean isDevflowComment(IncomingComment comment) {
+        if (comment == null) {
+            return false;
+        }
+        if (devflowAccountId != null) {
+            return devflowAccountId.equals(comment.authorId());
+        }
+        return comment.body() != null && comment.body().contains(DEVFLOW_COMMENT_MARKER);
+    }
+
+    private boolean isUserComment(IncomingComment comment) {
+        return comment != null && comment.body() != null && !isDevflowComment(comment);
+    }
+
+    private Instant commentTimestamp(IncomingComment comment) {
+        return comment.updatedAt() != null ? comment.updatedAt() : comment.createdAt();
+    }
+
+    /**
+     * Determines whether an ineligible ticket should be silently skipped because DevFlow already
+     * posted an eligibility comment and no new information has been added since then.
+     *
+     * <p>Re-evaluation is triggered when:
+     * <ul>
+     *   <li>A non-DevFlow user posted a comment after the last eligibility assessment</li>
+     *   <li>The issue was updated (description, fields) after the assessment (with a grace period
+     *       to ignore the update caused by the assessment comment itself)</li>
+     * </ul>
+     */
+    private boolean shouldSkipIneligibleTicket(Map<String, Object> issue, List<IncomingComment> comments) {
+        Optional<IncomingComment> lastEligibilityComment = comments.stream()
+            .filter(this::isDevflowEligibilityComment)
+            .max(Comparator.comparing(this::commentTimestamp));
+
+        if (lastEligibilityComment.isEmpty()) {
+            return false;
+        }
+
+        Instant eligibilityTimestamp = commentTimestamp(lastEligibilityComment.get());
+
+        boolean hasNewerUserComment = comments.stream()
+            .filter(this::isUserComment)
+            .map(this::commentTimestamp)
+            .anyMatch(timestamp -> timestamp.isAfter(eligibilityTimestamp));
+
+        if (hasNewerUserComment) {
+            return false;
+        }
+
+        Instant issueUpdatedAt = jiraPayloadMapper.extractIssueUpdatedAt(issue);
+        if (issueUpdatedAt != null
+            && issueUpdatedAt.isAfter(eligibilityTimestamp.plusSeconds(ELIGIBILITY_REASSESSMENT_GRACE_SECONDS))) {
+            return false;
+        }
+
+        return true;
+    }
+
+    private boolean isDevflowEligibilityComment(IncomingComment comment) {
+        return isDevflowComment(comment)
+            && comment.body() != null
+            && comment.body().contains(DEVFLOW_NOT_ELIGIBLE_MARKER);
+    }
+
+    // ---- Jira API helpers ----
+
+    private void resolveDevflowAccountId() {
+        if (devflowAccountId != null) {
+            return;
+        }
+        HttpRequest request = HttpRequest.newBuilder()
+            .uri(URI.create(config.baseUrl() + MYSELF_PATH))
+            .header(HEADER_AUTHORIZATION, AUTH_SCHEME_BASIC + encodedCredentials())
+            .header(HEADER_ACCEPT, CONTENT_TYPE_JSON)
+            .timeout(HTTP_TIMEOUT)
+            .GET()
+            .build();
+
+        try {
+            HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() >= 400) {
+                LOG.warnf(
+                    "Failed to resolve DevFlow account ID: HTTP %d - %s",
+                    response.statusCode(),
+                    response.body().length() > 200 ? response.body().substring(0, 200) : response.body()
+                );
+                return;
+            }
+            Map<String, Object> body = objectMapper.readValue(response.body(), MAP_TYPE);
+            Object accountId = body.get("accountId");
+            if (accountId instanceof String id && !id.isBlank()) {
+                devflowAccountId = id;
+                LOG.infof("Resolved DevFlow Jira account ID: %s", devflowAccountId);
+            } else {
+                LOG.warnf("Jira /myself response did not contain a valid accountId");
+            }
+        } catch (IOException exception) {
+            LOG.warnf(exception, "Unable to resolve DevFlow account ID from Jira");
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            LOG.warnf("Interrupted while resolving DevFlow account ID");
+        }
+    }
+
+    private List<IncomingComment> safeLoadComments(String ticketKey) {
+        try {
+            return ticketingPort.listComments(JiraSystem.ID, ticketKey);
+        } catch (RuntimeException exception) {
+            LOG.warnf(exception, "Unable to load Jira comments for ticket %s", ticketKey);
+            return List.of();
+        }
+    }
+
+    private void postTicketComment(String ticketKey, String comment) {
+        try {
+            ticketingPort.comment(new CommentWorkItemCommand(JiraSystem.ID, ticketKey, comment, "ELIGIBILITY_CHECK"));
+        } catch (RuntimeException exception) {
+            LOG.warnf(exception, "Failed to post eligibility comment to ticket %s", ticketKey);
+        }
+    }
+
+    private Map<String, Object> fetchIssuesPage(String status, String nextPageToken) {
         var payloadNode = objectMapper.createObjectNode();
-        payloadNode.put(PAYLOAD_JQL, buildJql());
+        payloadNode.put(PAYLOAD_JQL, buildJql(status));
         payloadNode.put(PAYLOAD_MAX_RESULTS, config.pollMaxResults());
         payloadNode.putArray(PAYLOAD_FIELDS)
             .add("summary")
@@ -150,7 +507,7 @@ public class JiraTicketPollingJob {
         String payload = payloadNode.toString();
 
         HttpRequest request = HttpRequest.newBuilder()
-            .uri(buildIssuesUri())
+            .uri(buildSearchUri())
             .header(HEADER_AUTHORIZATION, AUTH_SCHEME_BASIC + encodedCredentials())
             .header(HEADER_ACCEPT, CONTENT_TYPE_JSON)
             .header(HEADER_CONTENT_TYPE, CONTENT_TYPE_JSON)
@@ -161,7 +518,9 @@ public class JiraTicketPollingJob {
         try {
             HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
             if (response.statusCode() >= 400) {
-                throw new IllegalStateException("Jira issue polling failed: HTTP " + response.statusCode() + " - " + response.body());
+                throw new IllegalStateException(
+                    "Jira issue polling failed: HTTP " + response.statusCode() + " - " + response.body()
+                );
             }
             return objectMapper.readValue(response.body(), MAP_TYPE);
         } catch (IOException exception) {
@@ -172,14 +531,14 @@ public class JiraTicketPollingJob {
         }
     }
 
-    private URI buildIssuesUri() {
+    private URI buildSearchUri() {
         return URI.create(config.baseUrl() + SEARCH_ISSUES_PATH);
     }
 
-    private String buildJql() {
-        return JQL_PARENT_TEMPLATE.formatted(
+    private String buildJql(String status) {
+        return JQL_PARENT_STATUS_TEMPLATE.formatted(
             escapeJqlValue(config.epicKey()),
-            escapeJqlValue(config.todoStatus())
+            escapeJqlValue(status)
         );
     }
 
@@ -190,6 +549,13 @@ public class JiraTicketPollingJob {
     private String encodedCredentials() {
         String credentials = config.userEmail() + ":" + config.apiToken();
         return Base64.getEncoder().encodeToString(credentials.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private boolean isPollingConfigured() {
+        return !isBlank(config.baseUrl())
+            && !isBlank(config.userEmail())
+            && !isBlank(config.apiToken())
+            && !isBlank(config.epicKey());
     }
 
     private boolean isBlank(String value) {

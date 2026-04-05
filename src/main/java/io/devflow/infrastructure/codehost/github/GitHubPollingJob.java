@@ -2,16 +2,27 @@ package io.devflow.infrastructure.codehost.github;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import io.devflow.application.command.workflow.WorkflowSignalCommand;
-import io.devflow.application.port.persistence.ExternalReferenceStore;
-import io.devflow.application.usecase.WorkflowSignalService;
+import io.devflow.application.command.agent.CancelAgentRunCommand;
+import io.devflow.application.command.agent.StartAgentRunCommand;
+import io.devflow.application.command.ticketing.CommentWorkItemCommand;
+import io.devflow.application.command.workspace.PrepareWorkspaceCommand;
+import io.devflow.application.port.agent.AgentRuntimePort;
+import io.devflow.application.port.codehost.CodeHostPort;
+import io.devflow.application.port.ticketing.TicketingPort;
+import io.devflow.application.runtime.DevFlowRuntime;
+import io.devflow.application.service.WorkItemTransitionService;
+import io.devflow.application.service.WorkspaceLayoutService;
+import io.devflow.infrastructure.agent.opencode.OpenCodeRuntimeConfig;
 import io.devflow.domain.codehost.CodeChangeRef;
-import io.devflow.domain.codehost.CodeChangeStatus;
-import io.devflow.domain.codehost.ExternalReference;
-import io.devflow.domain.codehost.ExternalReferenceType;
 import io.devflow.domain.ticketing.ExternalCommentParentType;
 import io.devflow.domain.ticketing.IncomingComment;
-import io.devflow.domain.workflow.WorkflowSignalType;
+import io.devflow.domain.ticketing.WorkItem;
+import io.devflow.domain.ticketing.WorkItemTransitionTarget;
+import io.devflow.domain.workflow.WorkflowPhase;
+import io.devflow.domain.workspace.PreparedWorkspace;
+import io.devflow.domain.workspace.RepositoryWorkspace;
+import io.devflow.infrastructure.ticketing.jira.JiraConfig;
+import io.devflow.infrastructure.ticketing.jira.JiraSystem;
 import io.quarkus.scheduler.Scheduled;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -22,17 +33,27 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.format.DateTimeParseException;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import org.jboss.logging.Logger;
 
+/**
+ * Stateless GitHub poller. Discovers open PRs on devflow/* branches via the GitHub API,
+ * checks for review comments, and starts an agent run to address them.
+ *
+ * <p>No ExternalReferenceStore — PRs are discovered fresh every poll cycle from the GitHub API.
+ */
 @ApplicationScoped
 public class GitHubPollingJob {
 
     private static final Logger LOG = Logger.getLogger(GitHubPollingJob.class);
 
-    private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() {
-    };
     private static final TypeReference<List<Map<String, Object>>> LIST_OF_MAP_TYPE = new TypeReference<>() {
     };
     private static final Duration HTTP_CONNECT_TIMEOUT = Duration.ofSeconds(5);
@@ -41,11 +62,11 @@ public class GitHubPollingJob {
     private static final String HEADER_ACCEPT = "Accept";
     private static final String GITHUB_ACCEPT_HEADER = "application/vnd.github+json";
     private static final String AUTH_SCHEME_BEARER = "Bearer ";
-    private static final String API_PULL_REQUEST_PATH_TEMPLATE = "/repos/%s/pulls/%s";
-    private static final String API_PULL_REQUEST_COMMENTS_PATH_TEMPLATE = "/repos/%s/pulls/%s/comments?per_page=100&sort=updated&direction=desc";
+    private static final String API_PULLS_PATH_TEMPLATE = "/repos/%s/pulls?state=open&per_page=100";
+    private static final String API_REVIEW_COMMENTS_PATH_TEMPLATE = "/repos/%s/pulls/%s/comments?per_page=100&sort=updated&direction=desc";
+    private static final String API_CLOSED_PULLS_PATH_TEMPLATE = "/repos/%s/pulls?state=closed&sort=updated&direction=desc&per_page=25";
+    private static final String API_COMMITS_PATH_TEMPLATE = "/repos/%s/commits?sha=%s&per_page=1";
     private static final String PAYLOAD_NUMBER = "number";
-    private static final String PAYLOAD_STATE = "state";
-    private static final String PAYLOAD_MERGED = "merged";
     private static final String PAYLOAD_HTML_URL = "html_url";
     private static final String PAYLOAD_UPDATED_AT = "updated_at";
     private static final String PAYLOAD_CREATED_AT = "created_at";
@@ -56,10 +77,19 @@ public class GitHubPollingJob {
     private static final String PAYLOAD_USER = "user";
     private static final String PAYLOAD_LOGIN = "login";
     private static final String PAYLOAD_BODY = "body";
-    private static final String STATE_OPEN = "open";
-    private static final String STATE_CLOSED = "closed";
-    private static final String SIGNAL_REVIEW_COMMENT_PREFIX = "github-poll:comment:";
-    private static final String SIGNAL_PR_STATE_PREFIX = "github-poll:pr:";
+    private static final String PAYLOAD_TITLE = "title";
+    private static final String PAYLOAD_MERGED_AT = "merged_at";
+    private static final String PAYLOAD_COMMIT = "commit";
+    private static final String PAYLOAD_COMMITTER = "committer";
+    private static final String PAYLOAD_DATE = "date";
+
+    /**
+     * Extracts the ticket key from a devflow branch name.
+     * Examples: devflow/PROJ-123/repo-name → PROJ-123, devflow/proj-42/foo → PROJ-42
+     */
+    private static final Pattern TICKET_KEY_PATTERN = Pattern.compile(
+        "^devflow/([A-Za-z]+-\\d+)(?:/.*)?$"
+    );
 
     private final HttpClient client = HttpClient.newBuilder()
         .connectTimeout(HTTP_CONNECT_TIMEOUT)
@@ -69,123 +99,362 @@ public class GitHubPollingJob {
     GitHubConfig config;
 
     @Inject
-    ExternalReferenceStore externalReferenceStore;
+    DevFlowRuntime runtime;
 
     @Inject
-    WorkflowSignalService workflowSignalService;
+    AgentRuntimePort agentRuntimePort;
+
+    @Inject
+    CodeHostPort codeHostPort;
+
+    @Inject
+    TicketingPort ticketingPort;
+
+    @Inject
+    WorkspaceLayoutService workspaceLayoutService;
 
     @Inject
     ObjectMapper objectMapper;
+
+    @Inject
+    WorkItemTransitionService workItemTransitionService;
+
+    @Inject
+    OpenCodeRuntimeConfig agentRuntimeConfig;
+
+    @Inject
+    JiraConfig jiraConfig;
+
+    // ---- Scheduled entry point ----
 
     @Scheduled(
         every = "${devflow.github.poll-interval-minutes:1}m",
         concurrentExecution = Scheduled.ConcurrentExecution.SKIP
     )
-    void pollTrackedCodeChanges() {
+    void pollOpenPullRequests() {
         if (isBlank(config.token())) {
             return;
         }
 
-        List<ExternalReference> trackedCodeChanges = externalReferenceStore.findByType(ExternalReferenceType.CODE_CHANGE).stream()
-            .filter(this::isOpenGitHubCodeChange)
+        List<String> repositories = codeHostPort.configuredRepositories();
+        if (repositories.isEmpty()) {
+            return;
+        }
+
+        // Phase 1: Check for merged PRs (no agent needed, always runs)
+        for (String repository : repositories) {
+            processMergedPullRequests(repository);
+        }
+
+        // Phase 2: Check for review comments (needs agent)
+        cancelStaleRunIfNeeded();
+        if (runtime.isBusy()) {
+            LOG.info("Skipping GitHub review comment polling because an agent run is active");
+            return;
+        }
+
+        for (String repository : repositories) {
+            if (runtime.isBusy()) {
+                return;
+            }
+            pollRepositoryPullRequests(repository);
+        }
+    }
+
+    // ---- Stale run detection ----
+
+    private void cancelStaleRunIfNeeded() {
+        Duration maxDuration = Duration.ofMinutes(agentRuntimeConfig.maxRunDurationMinutes());
+        if (!runtime.isStale(maxDuration)) {
+            return;
+        }
+        DevFlowRuntime.RunContext stale = runtime.current();
+        if (stale == null) {
+            return;
+        }
+        LOG.warnf(
+            "Run %s for ticket %s has been active for more than %d minutes — cancelling",
+            stale.agentRunId(), stale.ticketKey(), agentRuntimeConfig.maxRunDurationMinutes()
+        );
+        try {
+            agentRuntimePort.cancelRun(new CancelAgentRunCommand(stale.agentRunId()));
+        } catch (RuntimeException exception) {
+            LOG.warnf(exception, "Failed to cancel stale agent run %s — clearing locally", stale.agentRunId());
+        }
+        runtime.clearRunIfMatches(stale.agentRunId());
+    }
+
+    // ---- Per-repository PR scanning ----
+
+    private void pollRepositoryPullRequests(String repository) {
+        List<Map<String, Object>> pullRequests = fetchOpenPullRequests(repository);
+        List<Map<String, Object>> devflowPRs = pullRequests.stream()
+            .filter(this::isDevflowBranch)
             .toList();
-        if (!trackedCodeChanges.isEmpty()) {
-            LOG.infof("Polling GitHub state for %d tracked pull requests", trackedCodeChanges.size());
+
+        if (!devflowPRs.isEmpty()) {
+            LOG.infof("Found %d open devflow PRs in repository %s", devflowPRs.size(), repository);
         }
-        trackedCodeChanges.forEach(this::pollCodeChange);
+
+        for (Map<String, Object> pullRequest : devflowPRs) {
+            if (runtime.isBusy()) {
+                return;
+            }
+            checkPullRequestForReviewComments(repository, pullRequest);
+        }
     }
 
-    private boolean isOpenGitHubCodeChange(ExternalReference reference) {
-        if (!GitHubSystem.ID.equals(reference.system())) {
-            return false;
-        }
-        Object status = metadata(reference).get("status");
-        return CodeChangeStatus.OPEN.name().equals(status);
-    }
-
-    private void pollCodeChange(ExternalReference reference) {
-        Map<String, Object> pullRequest = fetchPullRequest(reference);
-        CodeChangeRef codeChange = toCodeChangeRef(reference, pullRequest);
-        LOG.infof(
-            "Polled GitHub pull request %s for repository %s",
-            codeChange.externalId(),
-            codeChange.repository()
-        );
-
-        if (Boolean.TRUE.equals(pullRequest.get(PAYLOAD_MERGED))) {
-            LOG.infof("Detected merged pull request %s", codeChange.externalId());
-            dispatch(new WorkflowSignalCommand(
-                WorkflowSignalType.CODE_CHANGE_MERGED,
-                GitHubSystem.ID,
-                buildPullRequestSignalId(reference.externalId(), "merged", extractInstant(pullRequest.get(PAYLOAD_UPDATED_AT))),
-                null,
-                extractInstant(pullRequest.get(PAYLOAD_UPDATED_AT)),
-                null,
-                null,
-                codeChange,
-                null,
-                null
-            ));
+    private void checkPullRequestForReviewComments(String repository, Map<String, Object> pullRequest) {
+        String headBranch = extractHeadBranch(pullRequest);
+        String baseBranch = extractBaseBranch(pullRequest);
+        String ticketKey = extractTicketKey(headBranch);
+        if (ticketKey == null) {
+            LOG.debugf("Cannot extract ticket key from branch %s, skipping", headBranch);
             return;
         }
 
-        if (STATE_CLOSED.equalsIgnoreCase(String.valueOf(pullRequest.get(PAYLOAD_STATE)))) {
-            LOG.infof("Detected closed-unmerged pull request %s", codeChange.externalId());
-            dispatch(new WorkflowSignalCommand(
-                WorkflowSignalType.CODE_CHANGE_CLOSED_UNMERGED,
-                GitHubSystem.ID,
-                buildPullRequestSignalId(reference.externalId(), "closed", extractInstant(pullRequest.get(PAYLOAD_UPDATED_AT))),
-                null,
-                extractInstant(pullRequest.get(PAYLOAD_UPDATED_AT)),
-                null,
-                null,
-                codeChange,
-                null,
-                null
-            ));
+        Number prNumber = (Number) pullRequest.get(PAYLOAD_NUMBER);
+        String prUrl = string(pullRequest.get(PAYLOAD_HTML_URL));
+        String externalId = repository + GitHubCodeHostAdapter.PULL_REQUEST_EXTERNAL_ID_SEPARATOR + prNumber.longValue();
+
+        List<Map<String, Object>> reviewComments = fetchReviewComments(repository, String.valueOf(prNumber.longValue()));
+        if (reviewComments.isEmpty()) {
             return;
         }
 
-        List<Map<String, Object>> reviewComments = fetchReviewComments(codeChange);
-        if (!reviewComments.isEmpty()) {
-            LOG.infof(
-                "Detected %d GitHub review comments on pull request %s",
-                reviewComments.size(),
-                codeChange.externalId()
+        // Find the most recent non-bot review comment
+        Map<String, Object> latestComment = reviewComments.stream()
+            .filter(this::isHumanComment)
+            .max(Comparator.comparing(comment -> extractInstant(comment.get(PAYLOAD_UPDATED_AT))))
+            .orElse(null);
+
+        if (latestComment == null) {
+            return;
+        }
+
+        // Dedup: skip if the comment was posted before the last commit on the branch.
+        // This means DevFlow already handled it by pushing a new commit in response.
+        Instant commentDate = extractInstant(latestComment.get(PAYLOAD_CREATED_AT));
+        Instant lastCommitDate = fetchLastCommitDate(repository, headBranch);
+        if (commentDate != null && lastCommitDate != null && !commentDate.isAfter(lastCommitDate)) {
+            LOG.debugf(
+                "Review comment on PR %s for ticket %s predates last commit, already handled",
+                externalId, ticketKey
             );
+            return;
         }
-        reviewComments.forEach(comment -> dispatch(new WorkflowSignalCommand(
-            WorkflowSignalType.CODE_CHANGE_REVIEW_COMMENT_RECEIVED,
-            GitHubSystem.ID,
-            buildReviewCommentSignalId(comment),
-            null,
-            extractInstant(comment.get(PAYLOAD_UPDATED_AT)),
-            null,
-            toIncomingComment(codeChange.externalId(), comment),
-            codeChange,
-            null,
-            null
-        )));
-    }
 
-    private void dispatch(WorkflowSignalCommand command) {
-        workflowSignalService.handle(command);
-    }
-
-    private CodeChangeRef toCodeChangeRef(ExternalReference reference, Map<String, Object> pullRequest) {
-        Map<String, Object> metadata = metadata(reference);
-        String repository = string(metadata.get("repository"));
-        String url = string(pullRequest.get(PAYLOAD_HTML_URL));
-        String sourceBranch = branchName(pullRequest.get(PAYLOAD_HEAD), metadata.get("sourceBranch"));
-        String targetBranch = branchName(pullRequest.get(PAYLOAD_BASE), metadata.get("targetBranch"));
-        return new CodeChangeRef(
-            GitHubSystem.ID,
-            reference.externalId(),
-            repository,
-            url,
-            sourceBranch,
-            targetBranch
+        LOG.infof(
+            "Found new review comment on PR %s for ticket %s — starting agent run",
+            externalId, ticketKey
         );
+
+        CodeChangeRef codeChange = new CodeChangeRef(
+            GitHubSystem.ID,
+            externalId,
+            repository,
+            prUrl,
+            headBranch,
+            baseBranch
+        );
+        IncomingComment comment = toIncomingComment(externalId, latestComment);
+        startAgentRunForReviewComment(ticketKey, codeChange, comment, repository);
+    }
+
+    // ---- Merged PR processing ----
+
+    private void processMergedPullRequests(String repository) {
+        List<Map<String, Object>> closedPRs = fetchRecentlyClosedPullRequests(repository);
+        for (Map<String, Object> pr : closedPRs) {
+            if (!isDevflowBranch(pr) || !isMerged(pr)) {
+                continue;
+            }
+            String ticketKey = extractTicketKey(extractHeadBranch(pr));
+            if (ticketKey == null) {
+                continue;
+            }
+            handleMergedPullRequest(ticketKey, pr, repository);
+        }
+    }
+
+    private void handleMergedPullRequest(String ticketKey, Map<String, Object> pr, String repository) {
+        WorkItem workItem = safeLoadWorkItem(ticketKey);
+        if (workItem == null) {
+            return;
+        }
+        // Only transition if ticket is still in "To Review" — makes this idempotent
+        if (!jiraConfig.reviewStatus().equalsIgnoreCase(workItem.status())) {
+            return;
+        }
+
+        Number prNumber = (Number) pr.get(PAYLOAD_NUMBER);
+        String externalId = repository + GitHubCodeHostAdapter.PULL_REQUEST_EXTERNAL_ID_SEPARATOR + prNumber.longValue();
+        String prTitle = string(pr.get(PAYLOAD_TITLE));
+        String prUrl = string(pr.get(PAYLOAD_HTML_URL));
+        String prBody = string(pr.get(PAYLOAD_BODY));
+
+        LOG.infof("Detected merged PR %s for ticket %s — transitioning to 'To Validate'", externalId, ticketKey);
+
+        try {
+            workItemTransitionService.transitionDirect(
+                JiraSystem.ID, ticketKey, WorkItemTransitionTarget.TO_VALIDATE, "PR_MERGED"
+            );
+            String comment = buildMergedPRComment(prTitle, prUrl, prBody);
+            ticketingPort.comment(new CommentWorkItemCommand(JiraSystem.ID, ticketKey, comment, "PR_MERGED"));
+        } catch (RuntimeException exception) {
+            LOG.warnf(exception, "Failed to process merged PR %s for ticket %s", externalId, ticketKey);
+        }
+    }
+
+    private boolean isMerged(Map<String, Object> pullRequest) {
+        return pullRequest.get(PAYLOAD_MERGED_AT) != null;
+    }
+
+    private String buildMergedPRComment(String prTitle, String prUrl, String prBody) {
+        StringBuilder comment = new StringBuilder("Pull request merged and ready for validation.");
+        if (prUrl != null && !prUrl.isBlank()) {
+            comment.append("\n\nPull request: ").append(prUrl);
+        }
+        if (prTitle != null && !prTitle.isBlank()) {
+            comment.append("\nTitle: ").append(prTitle);
+        }
+        if (prBody != null && !prBody.isBlank()) {
+            comment.append("\n\n").append(prBody);
+        }
+        return comment.toString();
+    }
+
+    // ---- Agent run dispatch ----
+
+    private void startAgentRunForReviewComment(
+        String ticketKey,
+        CodeChangeRef codeChange,
+        IncomingComment reviewComment,
+        String repository
+    ) {
+        UUID workflowId = UUID.randomUUID();
+        UUID agentRunId = UUID.randomUUID();
+        String objective = "Address review comment on PR " + codeChange.externalId() + " for ticket " + ticketKey;
+
+        runtime.startRun(
+            workflowId, agentRunId, JiraSystem.ID, ticketKey,
+            WorkflowPhase.IMPLEMENTATION, objective
+        );
+
+        Map<String, Object> snapshot = buildSnapshot(workflowId, ticketKey, codeChange, reviewComment);
+        workspaceLayoutService.ensureDirectories(workflowId);
+
+        Map<String, Object> preparedSnapshot = prepareSnapshotWithWorkspace(
+            workflowId, repository, codeChange, snapshot
+        );
+        preparedSnapshot.put("phase", WorkflowPhase.IMPLEMENTATION.name());
+
+        StartAgentRunCommand command = StartAgentRunCommand.start(
+            UUID.randomUUID(),
+            workflowId,
+            agentRunId,
+            WorkflowPhase.IMPLEMENTATION,
+            objective,
+            preparedSnapshot
+        );
+
+        try {
+            LOG.infof("Dispatching agent run %s for review comment on ticket %s", agentRunId, ticketKey);
+            agentRuntimePort.startRun(command);
+        } catch (RuntimeException exception) {
+            LOG.errorf(exception, "Failed to dispatch agent run for review comment on ticket %s", ticketKey);
+            runtime.clearRun();
+        }
+    }
+
+    private Map<String, Object> buildSnapshot(
+        UUID workflowId,
+        String ticketKey,
+        CodeChangeRef codeChange,
+        IncomingComment reviewComment
+    ) {
+        Map<String, Object> snapshot = new LinkedHashMap<>();
+        snapshot.put("workflowId", workflowId.toString());
+        snapshot.put("workItemSystem", JiraSystem.ID);
+        snapshot.put("workItemKey", ticketKey);
+        snapshot.put("codeChange", codeChange);
+        snapshot.put("reviewComment", reviewComment);
+
+        // Try to load ticket details from Jira for additional context
+        WorkItem workItem = safeLoadWorkItem(ticketKey);
+        if (workItem != null) {
+            snapshot.put("workItem", workItem);
+        }
+
+        return snapshot;
+    }
+
+    private Map<String, Object> prepareSnapshotWithWorkspace(
+        UUID workflowId,
+        String repository,
+        CodeChangeRef codeChange,
+        Map<String, Object> inputSnapshot
+    ) {
+        Map<String, Object> snapshot = new LinkedHashMap<>(inputSnapshot);
+        Map<String, String> preferredBranches = new LinkedHashMap<>();
+        if (codeChange.repository() != null && codeChange.sourceBranch() != null) {
+            preferredBranches.put(codeChange.repository(), codeChange.sourceBranch());
+        }
+
+        PreparedWorkspace preparedWorkspace = codeHostPort.prepareWorkspace(
+            new PrepareWorkspaceCommand(workflowId, List.of(repository), preferredBranches)
+        );
+
+        Map<String, Object> workspace = new LinkedHashMap<>(workspaceLayoutService.describe(workflowId));
+        workspace.put("projectRoot", preparedWorkspace.projectRoot());
+        workspace.put("repositories", preparedWorkspace.repositories().stream()
+            .map(this::toWorkspaceEntry)
+            .toList());
+        snapshot.put("workspace", workspace);
+        snapshot.put("repositories", preparedWorkspace.repositories().stream()
+            .map(RepositoryWorkspace::repository)
+            .toList());
+        return snapshot;
+    }
+
+    private Map<String, Object> toWorkspaceEntry(RepositoryWorkspace workspace) {
+        Map<String, Object> entry = new LinkedHashMap<>();
+        entry.put("repository", workspace.repository());
+        entry.put("projectRoot", workspace.projectRoot());
+        return entry;
+    }
+
+    // ---- PR/comment helpers ----
+
+    private boolean isDevflowBranch(Map<String, Object> pullRequest) {
+        String headBranch = extractHeadBranch(pullRequest);
+        return headBranch != null && headBranch.startsWith(GitHubCodeHostAdapter.BRANCH_PREFIX);
+    }
+
+    private String extractHeadBranch(Map<String, Object> pullRequest) {
+        return string(map(pullRequest.get(PAYLOAD_HEAD)).get(PAYLOAD_REF));
+    }
+
+    private String extractBaseBranch(Map<String, Object> pullRequest) {
+        return string(map(pullRequest.get(PAYLOAD_BASE)).get(PAYLOAD_REF));
+    }
+
+    private String extractTicketKey(String branchName) {
+        if (branchName == null) {
+            return null;
+        }
+        Matcher matcher = TICKET_KEY_PATTERN.matcher(branchName);
+        if (matcher.matches()) {
+            return matcher.group(1).toUpperCase();
+        }
+        return null;
+    }
+
+    private boolean isHumanComment(Map<String, Object> comment) {
+        Map<String, Object> user = map(comment.get(PAYLOAD_USER));
+        String login = string(user.get(PAYLOAD_LOGIN));
+        // Filter out bot comments (GitHub Actions, apps, etc.)
+        return login != null && !login.endsWith("[bot]");
     }
 
     private IncomingComment toIncomingComment(String externalId, Map<String, Object> comment) {
@@ -201,94 +470,140 @@ public class GitHubPollingJob {
         );
     }
 
-    private List<Map<String, Object>> fetchReviewComments(CodeChangeRef codeChange) {
+    // ---- Jira fallback for ticket context ----
+
+    private WorkItem safeLoadWorkItem(String ticketKey) {
+        try {
+            return ticketingPort.loadWorkItem(JiraSystem.ID, ticketKey).orElse(null);
+        } catch (RuntimeException exception) {
+            LOG.debugf("Unable to load Jira work item %s for GitHub PR context (non-critical)", ticketKey);
+            return null;
+        }
+    }
+
+    // ---- GitHub API calls ----
+
+    private List<Map<String, Object>> fetchOpenPullRequests(String repository) {
         HttpRequest request = HttpRequest.newBuilder()
-            .uri(buildCommentsUri(codeChange.repository(), pullRequestNumber(codeChange.externalId())))
+            .uri(URI.create(config.apiUrl() + API_PULLS_PATH_TEMPLATE.formatted(repository)))
             .header(HEADER_AUTHORIZATION, AUTH_SCHEME_BEARER + config.token())
             .header(HEADER_ACCEPT, GITHUB_ACCEPT_HEADER)
             .timeout(HTTP_TIMEOUT)
             .GET()
             .build();
+
         try {
             HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
             if (response.statusCode() >= 400) {
-                throw new IllegalStateException("GitHub comment polling failed: HTTP " + response.statusCode() + " - " + response.body());
+                LOG.warnf("GitHub PR listing failed for %s: HTTP %d", repository, response.statusCode());
+                return List.of();
             }
             return objectMapper.readValue(response.body(), LIST_OF_MAP_TYPE);
         } catch (IOException exception) {
-            throw new IllegalStateException("Unable to poll GitHub review comments", exception);
+            LOG.warnf(exception, "Unable to list GitHub pull requests for %s", repository);
+            return List.of();
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
-            throw new IllegalStateException("Interrupted while polling GitHub review comments", exception);
+            throw new IllegalStateException("Interrupted while listing GitHub pull requests", exception);
         }
     }
 
-    private Map<String, Object> fetchPullRequest(ExternalReference reference) {
-        Map<String, Object> metadata = metadata(reference);
-        String repository = string(metadata.get("repository"));
+    private List<Map<String, Object>> fetchReviewComments(String repository, String pullRequestNumber) {
         HttpRequest request = HttpRequest.newBuilder()
-            .uri(buildPullRequestUri(repository, pullRequestNumber(reference.externalId())))
+            .uri(URI.create(config.apiUrl()
+                + API_REVIEW_COMMENTS_PATH_TEMPLATE.formatted(repository, pullRequestNumber)))
             .header(HEADER_AUTHORIZATION, AUTH_SCHEME_BEARER + config.token())
             .header(HEADER_ACCEPT, GITHUB_ACCEPT_HEADER)
             .timeout(HTTP_TIMEOUT)
             .GET()
             .build();
+
         try {
             HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
             if (response.statusCode() >= 400) {
-                throw new IllegalStateException("GitHub pull request polling failed: HTTP " + response.statusCode() + " - " + response.body());
+                LOG.warnf(
+                    "GitHub review comment listing failed for %s PR #%s: HTTP %d",
+                    repository, pullRequestNumber, response.statusCode()
+                );
+                return List.of();
             }
-            return objectMapper.readValue(response.body(), MAP_TYPE);
+            return objectMapper.readValue(response.body(), LIST_OF_MAP_TYPE);
         } catch (IOException exception) {
-            throw new IllegalStateException("Unable to poll GitHub pull request", exception);
+            LOG.warnf(exception, "Unable to list GitHub review comments for %s PR #%s", repository, pullRequestNumber);
+            return List.of();
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
-            throw new IllegalStateException("Interrupted while polling GitHub pull request", exception);
+            throw new IllegalStateException("Interrupted while listing GitHub review comments", exception);
         }
     }
 
-    private URI buildPullRequestUri(String repository, String pullRequestNumber) {
-        return URI.create(config.apiUrl() + API_PULL_REQUEST_PATH_TEMPLATE.formatted(repository, pullRequestNumber));
-    }
+    private List<Map<String, Object>> fetchRecentlyClosedPullRequests(String repository) {
+        HttpRequest request = HttpRequest.newBuilder()
+            .uri(URI.create(config.apiUrl() + API_CLOSED_PULLS_PATH_TEMPLATE.formatted(repository)))
+            .header(HEADER_AUTHORIZATION, AUTH_SCHEME_BEARER + config.token())
+            .header(HEADER_ACCEPT, GITHUB_ACCEPT_HEADER)
+            .timeout(HTTP_TIMEOUT)
+            .GET()
+            .build();
 
-    private URI buildCommentsUri(String repository, String pullRequestNumber) {
-        return URI.create(config.apiUrl() + API_PULL_REQUEST_COMMENTS_PATH_TEMPLATE.formatted(repository, pullRequestNumber));
-    }
-
-    private String pullRequestNumber(String externalId) {
-        int separator = externalId.lastIndexOf(GitHubCodeHostAdapter.PULL_REQUEST_EXTERNAL_ID_SEPARATOR);
-        if (separator < 0 || separator == externalId.length() - 1) {
-            throw new IllegalStateException("Invalid GitHub externalId: " + externalId);
+        try {
+            HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() >= 400) {
+                LOG.warnf("GitHub closed PR listing failed for %s: HTTP %d", repository, response.statusCode());
+                return List.of();
+            }
+            return objectMapper.readValue(response.body(), LIST_OF_MAP_TYPE);
+        } catch (IOException exception) {
+            LOG.warnf(exception, "Unable to list closed GitHub pull requests for %s", repository);
+            return List.of();
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("Interrupted while listing closed GitHub pull requests", exception);
         }
-        return externalId.substring(separator + 1);
     }
 
-    private String buildReviewCommentSignalId(Map<String, Object> comment) {
-        return SIGNAL_REVIEW_COMMENT_PREFIX + string(comment.get(PAYLOAD_ID)) + ":" + String.valueOf(comment.get(PAYLOAD_UPDATED_AT));
+    private Instant fetchLastCommitDate(String repository, String branch) {
+        HttpRequest request = HttpRequest.newBuilder()
+            .uri(URI.create(config.apiUrl() + API_COMMITS_PATH_TEMPLATE.formatted(repository, branch)))
+            .header(HEADER_AUTHORIZATION, AUTH_SCHEME_BEARER + config.token())
+            .header(HEADER_ACCEPT, GITHUB_ACCEPT_HEADER)
+            .timeout(HTTP_TIMEOUT)
+            .GET()
+            .build();
+
+        try {
+            HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() >= 400) {
+                LOG.debugf("GitHub commit listing failed for %s/%s: HTTP %d", repository, branch, response.statusCode());
+                return null;
+            }
+            List<Map<String, Object>> commits = objectMapper.readValue(response.body(), LIST_OF_MAP_TYPE);
+            if (commits.isEmpty()) {
+                return null;
+            }
+            Map<String, Object> commit = map(commits.getFirst().get(PAYLOAD_COMMIT));
+            Map<String, Object> committer = map(commit.get(PAYLOAD_COMMITTER));
+            return extractInstant(committer.get(PAYLOAD_DATE));
+        } catch (IOException exception) {
+            LOG.debugf(exception, "Unable to fetch last commit date for %s/%s", repository, branch);
+            return null;
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("Interrupted while fetching last commit date", exception);
+        }
     }
 
-    private String buildPullRequestSignalId(String externalId, String state, Instant updatedAt) {
-        return SIGNAL_PR_STATE_PREFIX + externalId + ":" + state + ":" + (updatedAt == null ? "unknown" : updatedAt.toString());
-    }
-
-    private String branchName(Object branch, Object fallback) {
-        String value = string(map(branch).get(PAYLOAD_REF));
-        return value == null || value.isBlank() ? string(fallback) : value;
-    }
+    // ---- Utility ----
 
     private Instant extractInstant(Object value) {
-        return value == null ? null : Instant.parse(String.valueOf(value));
-    }
-
-    private Map<String, Object> metadata(ExternalReference reference) {
-        return map(reference.metadataJson() == null ? Map.of() : readJsonMap(reference.metadataJson()));
-    }
-
-    private Map<String, Object> readJsonMap(String json) {
+        if (value == null) {
+            return null;
+        }
         try {
-            return objectMapper.readValue(json, MAP_TYPE);
-        } catch (IOException exception) {
-            throw new IllegalStateException("Unable to parse external reference metadata", exception);
+            return Instant.parse(String.valueOf(value));
+        } catch (DateTimeParseException exception) {
+            LOG.debugf("Unable to parse instant from value: %s", value);
+            return null;
         }
     }
 

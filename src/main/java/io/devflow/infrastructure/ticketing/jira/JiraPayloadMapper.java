@@ -4,6 +4,7 @@ import io.devflow.domain.ticketing.ExternalCommentParentType;
 import io.devflow.domain.ticketing.IncomingComment;
 import io.devflow.domain.ticketing.WorkItem;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Inject;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.format.DateTimeFormatter;
@@ -16,6 +17,9 @@ import java.util.StringJoiner;
 @ApplicationScoped
 public class JiraPayloadMapper {
 
+    @Inject
+    JiraConfig jiraConfig;
+
     private static final DateTimeFormatter JIRA_OFFSET_DATE_TIME_FORMATTER = new DateTimeFormatterBuilder()
         .appendPattern("yyyy-MM-dd'T'HH:mm:ss")
         .optionalStart()
@@ -26,7 +30,6 @@ public class JiraPayloadMapper {
 
     private static final String PAYLOAD_FIELDS = "fields";
     private static final String PAYLOAD_ISSUE_KEY = "key";
-    private static final String PAYLOAD_ISSUE_SELF = "self";
     private static final String PAYLOAD_ID = "id";
     private static final String PAYLOAD_AUTHOR = "author";
     private static final String PAYLOAD_ACCOUNT_ID = "accountId";
@@ -37,6 +40,7 @@ public class JiraPayloadMapper {
     private static final String PAYLOAD_CONTENT = "content";
     private static final String PAYLOAD_NAME = "name";
     private static final String PAYLOAD_ISSUES = "issues";
+    private static final String PAYLOAD_COMMENTS = "comments";
     private static final String ISSUE_FIELD_TYPE = "issuetype";
     private static final String ISSUE_FIELD_STATUS = "status";
     private static final String ISSUE_FIELD_SUMMARY = "summary";
@@ -47,16 +51,28 @@ public class JiraPayloadMapper {
 
     public WorkItem toWorkItem(Map<String, Object> issue) {
         Map<String, Object> fields = map(issue.get(PAYLOAD_FIELDS));
+        String key = string(issue.get(PAYLOAD_ISSUE_KEY));
         return new WorkItem(
-            string(issue.get(PAYLOAD_ISSUE_KEY)),
+            key,
             extractName(fields.get(ISSUE_FIELD_TYPE)),
             extractText(fields.get(ISSUE_FIELD_SUMMARY)),
             extractText(fields.get(ISSUE_FIELD_DESCRIPTION)),
             extractName(fields.get(ISSUE_FIELD_STATUS)),
-            string(issue.get(PAYLOAD_ISSUE_SELF)),
+            buildBrowseUrl(key),
             extractNames(fields.get(ISSUE_FIELD_LABELS)),
             List.of()
         );
+    }
+
+    private String buildBrowseUrl(String issueKey) {
+        if (issueKey == null) {
+            return null;
+        }
+        String base = jiraConfig.baseUrl();
+        if (base.endsWith("/")) {
+            base = base.substring(0, base.length() - 1);
+        }
+        return base + "/browse/" + issueKey;
     }
 
     public IncomingComment toComment(Map<String, Object> comment, String issueKey) {
@@ -78,6 +94,17 @@ public class JiraPayloadMapper {
             return issues.stream()
                 .filter(Map.class::isInstance)
                 .map(current -> (Map<String, Object>) current)
+                .toList();
+        }
+        return List.of();
+    }
+
+    public List<IncomingComment> extractComments(Map<String, Object> payload, String issueKey) {
+        Object rawComments = payload.get(PAYLOAD_COMMENTS);
+        if (rawComments instanceof List<?> comments) {
+            return comments.stream()
+                .filter(Map.class::isInstance)
+                .map(current -> toComment((Map<String, Object>) current, issueKey))
                 .toList();
         }
         return List.of();

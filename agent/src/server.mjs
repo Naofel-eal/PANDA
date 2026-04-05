@@ -65,8 +65,16 @@ function buildPrompt(command) {
     "Input snapshot JSON:",
     JSON.stringify(command.inputSnapshot ?? {}, null, 2),
     "",
-    "Follow the Devflow agent protocol strictly.",
-    "Use the Devflow tools for progress, blocker, completion, or failure.",
+    "CRITICAL: You MUST call exactly one terminal Devflow tool before you finish:",
+    "- devflow_complete_run (work done)",
+    "- devflow_request_input (blocked, need external info)",
+    "- devflow_fail_run (unrecoverable technical failure)",
+    "If you exit without calling one of these tools, the run is LOST and the ticket will be stuck permanently.",
+    "",
+    "Follow the Devflow agent protocol in AGENTS.md strictly.",
+    "IMPORTANT: Do NOT try to fetch, curl, or access any URLs from the snapshot (including workItem.url).",
+    "You do NOT have network access to Jira, GitHub APIs, or any external service.",
+    "All the information you need is already in the snapshot above. Use it directly.",
     "Do not try to interact with external systems directly."
   ].join("\n")
 }
@@ -198,12 +206,67 @@ async function postEvent(event) {
   }
 }
 
-function appendLogBuffer(run, field, chunk) {
-  const text = chunk.toString("utf8")
-  const streamLabel = field === "stdout" ? "stdout" : "stderr"
-  console.log(`[agent-runtime] ${streamLabel} ${run.agentRunId}: ${text.trimEnd()}`)
+function bufferStream(run, field, text) {
   const value = `${run[field]}${text}`
   run[field] = value.length > HTTP.logTailMaxChars ? value.slice(-HTTP.logTailMaxChars) : value
+}
+
+function logStdoutLine(run, line) {
+  const trimmed = line.trim()
+  if (!trimmed) {
+    return
+  }
+  try {
+    const entry = JSON.parse(trimmed)
+    if (entry.type === "text") {
+      const content = entry.content ?? entry.text ?? ""
+      const display = typeof content === "string" ? content : JSON.stringify(content)
+      if (display) {
+        console.log(`[agent] ${run.agentRunId}: ${display}`)
+      }
+      return
+    }
+    if (entry.type === "tool_use") {
+      const toolName = entry.name ?? entry.tool ?? "unknown"
+      console.log(`[agent] ${run.agentRunId}: [tool] calling ${toolName}`)
+      return
+    }
+    if (entry.type === "tool_result") {
+      const toolName = entry.name ?? entry.tool ?? "unknown"
+      const ok = entry.error ? "error" : "ok"
+      console.log(`[agent] ${run.agentRunId}: [tool] ${toolName} → ${ok}`)
+      return
+    }
+    if (entry.type === "step_finish") {
+      const summary = entry.summary ?? `step finished (tokens: ${entry.tokens ?? "?"})`
+      console.log(`[agent] ${run.agentRunId}: [step] ${summary}`)
+      return
+    }
+  } catch {
+    console.log(`[agent] ${run.agentRunId}: ${trimmed}`)
+  }
+}
+
+function appendLogBuffer(run, field, chunk) {
+  const text = chunk.toString("utf8")
+  bufferStream(run, field, text)
+  if (field === "stderr") {
+    const lines = text.split("\n")
+    for (const line of lines) {
+      const trimmed = line.trim()
+      if (trimmed && (
+        trimmed.includes("[devflow-tool]")
+        || /\b(error|fatal|panic)\b/i.test(trimmed)
+      )) {
+        console.log(`[agent] ${run.agentRunId}: [stderr] ${trimmed}`)
+      }
+    }
+    return
+  }
+  const lines = text.split("\n")
+  for (const line of lines) {
+    logStdoutLine(run, line)
+  }
 }
 
 async function handleProcessExit(run, code, signal) {
@@ -215,9 +278,23 @@ async function handleProcessExit(run, code, signal) {
     const type = run.cancelRequested ? AgentEventType.CANCELLED : AgentEventType.FAILED
     const summary = run.cancelRequested
       ? `Run ${run.agentRunId} was cancelled by the orchestrator.`
-      : code === 0
-        ? "OpenCode exited without sending a terminal Devflow event."
-        : `OpenCode exited with code ${code ?? "unknown"}${signal ? ` and signal ${signal}` : ""}.`
+      : run.timedOut
+        ? `Run ${run.agentRunId} was terminated after exceeding maximum duration (${HTTP.maxRunDurationMs}ms).`
+        : code === 0
+          ? `Run ${run.agentRunId}: OpenCode exited normally but never called a terminal Devflow tool (devflow_complete_run, devflow_request_input, or devflow_fail_run). The agent may have failed to load tools or exhausted its step limit.`
+          : `OpenCode exited with code ${code ?? "unknown"}${signal ? ` and signal ${signal}` : ""} without sending a terminal Devflow event.`
+
+    // Diagnostic dump: print captured stderr/stdout tail so we can understand what went wrong
+    if (run.stderr.trim()) {
+      console.log(`[agent-runtime] === stderr tail for run ${run.agentRunId} ===`)
+      console.log(run.stderr.slice(-4000))
+      console.log(`[agent-runtime] === end stderr tail ===`)
+    }
+    if (run.stdout.trim()) {
+      console.log(`[agent-runtime] === stdout tail for run ${run.agentRunId} ===`)
+      console.log(run.stdout.slice(-4000))
+      console.log(`[agent-runtime] === end stdout tail ===`)
+    }
 
     await postEvent({
       eventId: `${run.agentRunId}:${randomUUID()}`,
@@ -285,6 +362,8 @@ async function startRun(command, response) {
     child,
     stateFile,
     cancelRequested: false,
+    timedOut: false,
+    maxRunTimer: null,
     stdout: "",
     stderr: ""
   }
@@ -301,7 +380,29 @@ async function startRun(command, response) {
     await started
     activeRun = run
     console.log(`[agent-runtime] Spawned OpenCode process for run ${command.agentRunId}`)
+
+    run.maxRunTimer = setTimeout(() => {
+      if (activeRun?.agentRunId === run.agentRunId) {
+        run.timedOut = true
+        console.log(
+          `[agent-runtime] Run ${run.agentRunId} exceeded max duration (${HTTP.maxRunDurationMs}ms), sending ${ProcessSignal.SIGTERM}`
+        )
+        run.child.kill(ProcessSignal.SIGTERM)
+        setTimeout(() => {
+          if (activeRun?.agentRunId === run.agentRunId) {
+            console.log(`[agent-runtime] Forcing kill for timed-out run ${run.agentRunId}`)
+            run.child.kill(ProcessSignal.SIGKILL)
+          }
+        }, HTTP.cancelKillDelayMs).unref()
+      }
+    }, HTTP.maxRunDurationMs)
+    run.maxRunTimer.unref()
+
     child.on("exit", (code, signal) => {
+      if (run.maxRunTimer) {
+        clearTimeout(run.maxRunTimer)
+        run.maxRunTimer = null
+      }
       void handleProcessExit(run, code, signal)
     })
 

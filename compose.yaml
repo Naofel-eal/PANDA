@@ -1,28 +1,13 @@
 services:
-  postgres:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_DB: devflow
-      POSTGRES_USER: devflow
-      POSTGRES_PASSWORD: devflow
-    volumes:
-      - postgres-data:/var/lib/postgresql/data
-    networks:
-      - data
-
   orchestrator:
     build:
       context: .
       dockerfile: Dockerfile.orchestrator
     depends_on:
-      - postgres
       - agent
     env_file:
       - .env
     environment:
-      DB_JDBC_URL: jdbc:postgresql://postgres:5432/devflow
-      DB_USERNAME: devflow
-      DB_PASSWORD: devflow
       AGENT_BASE_URL: http://agent:8081
       DEVFLOW_WORKSPACE_RUN_ROOT: /workspace/runs
     ports:
@@ -31,7 +16,6 @@ services:
       - workspace-runs:/workspace/runs
     networks:
       - control
-      - data
       - egress
 
   agent:
@@ -49,13 +33,10 @@ services:
       - egress
 
 volumes:
-  postgres-data:
   workspace-runs:
   agent-state:
 
 networks:
   control:
-    internal: true
-  data:
     internal: true
   egress:

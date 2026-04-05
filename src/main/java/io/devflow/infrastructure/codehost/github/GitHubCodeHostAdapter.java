@@ -267,16 +267,17 @@ public class GitHubCodeHostAdapter implements CodeHostPort {
         );
         String baseBranch = stringArtifact(artifacts, "baseBranch", resolveBaseBranch(repository));
         String summary = stringArtifact(artifacts, "summary", command.summary());
+        String defaultTitle = defaultConventionalTitle(command.workItemTitle(), summary);
         String commitMessage = stringArtifact(
             artifacts,
             "commitMessage",
-            command.workItemKey() + ": " + defaultSummary(summary, "implementation update") + " [" + repository + "]"
+            defaultTitle
         );
-        String prTitle = stringArtifact(
+        String prTitle = appendTicketSuffix(stringArtifact(
             artifacts,
             "prTitle",
-            command.workItemKey() + " - " + defaultSummary(command.workItemTitle(), "Implementation") + " [" + repository + "]"
-        );
+            commitMessage
+        ), command.workItemKey());
         String prBody = stringArtifact(artifacts, "prBody", summary == null ? "" : summary);
         return new RepoPublishInstructions(repository, branchName, baseBranch, commitMessage, prTitle, prBody);
     }
@@ -430,6 +431,20 @@ public class GitHubCodeHostAdapter implements CodeHostPort {
 
     private String defaultSummary(String value, String fallback) {
         return value == null || value.isBlank() ? fallback : value;
+    }
+
+    private String defaultConventionalTitle(String workItemTitle, String summary) {
+        String subject = defaultSummary(workItemTitle, summary);
+        subject = defaultSummary(subject, "implementation update").trim();
+        return "chore(DEVFLOW): " + subject;
+    }
+
+    private String appendTicketSuffix(String title, String workItemKey) {
+        if (workItemKey == null || workItemKey.isBlank()) {
+            return title;
+        }
+        String suffix = " [" + workItemKey.trim() + "]";
+        return title != null && title.endsWith(suffix) ? title : defaultSummary(title, "").trim() + suffix;
     }
 
     private String enforceDevflowPrefix(String branchName) {

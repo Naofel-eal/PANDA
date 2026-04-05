@@ -2,11 +2,12 @@
 
 Ce document decrit exactement les callbacks HTTP que l'agent envoie a l'orchestrateur.
 
-Les fichiers OpenCode associes a ces callbacks sont centralises sous [agent/opencode](/Users/naof.elelalouani/Documents/Dev/Perso/devflow/agent/opencode), puis copies dans le workspace partage `/workspace/runs` avant chaque run:
+Les fichiers OpenCode associes a ces callbacks sont centralises sous `agent/opencode`, puis copies dans le workspace partage `/workspace/runs` avant chaque run:
 
-- [AGENTS.md](/Users/naof.elelalouani/Documents/Dev/Perso/devflow/agent/opencode/AGENTS.md)
-- [opencode.json](/Users/naof.elelalouani/Documents/Dev/Perso/devflow/agent/opencode/opencode.json)
-- [devflow.js](/Users/naof.elelalouani/Documents/Dev/Perso/devflow/agent/opencode/.opencode/tools/devflow.js)
+- `AGENTS.md` (instructions et output requirements de l'agent)
+- `opencode.json`
+- `.opencode/tools/devflow.js`
+- `.opencode/lib/devflow-constants.js`
 
 Tous les callbacks partent du container agent vers:
 
@@ -61,13 +62,13 @@ Le schema HTTP accepte la structure suivante:
   - emis par le runtime agent
   - pas de skill OpenCode
 - `PROGRESS_REPORTED`
-  - emis par OpenCode via [devflow-report-progress](/Users/naof.elelalouani/Documents/Dev/Perso/devflow/agent/opencode/.opencode/skills/devflow-report-progress/SKILL.md)
+  - emis par OpenCode via `devflow-report-progress` skill
 - `INPUT_REQUIRED`
-  - emis par OpenCode via [devflow-request-input](/Users/naof.elelalouani/Documents/Dev/Perso/devflow/agent/opencode/.opencode/skills/devflow-request-input/SKILL.md)
+  - emis par OpenCode via `devflow-request-input` skill
 - `COMPLETED`
-  - emis par OpenCode via [devflow-complete-run](/Users/naof.elelalouani/Documents/Dev/Perso/devflow/agent/opencode/.opencode/skills/devflow-complete-run/SKILL.md)
+  - emis par OpenCode via `devflow-complete-run` skill
 - `FAILED`
-  - emis par OpenCode via [devflow-fail-run](/Users/naof.elelalouani/Documents/Dev/Perso/devflow/agent/opencode/.opencode/skills/devflow-fail-run/SKILL.md)
+  - emis par OpenCode via `devflow-fail-run` skill
   - ou par le runtime agent en fallback si OpenCode sort sans evenement terminal
 - `CANCELLED`
   - emis par le runtime agent
@@ -86,6 +87,10 @@ Quand:
 But:
 
 - dire a l'orchestrateur que le run est effectivement parti
+
+Effet dans l'orchestrateur:
+
+- transition du ticket vers "In Progress"
 
 Exemple:
 
@@ -115,10 +120,9 @@ But:
 
 - donner une trace lisible de l'avancement sans terminer le run
 
-Champs utilises:
+Effet dans l'orchestrateur:
 
-- `summary`
-- `details`
+- log seulement, aucune transition
 
 Exemple:
 
@@ -151,15 +155,11 @@ But:
 - demander a l'orchestrateur de bloquer le workflow
 - demander a l'orchestrateur de commenter le ticket
 
-Champs utilises:
+Effet dans l'orchestrateur:
 
-- `blockerType`
-- `reasonCode`
-- `summary`
-- `requestedFrom`
-- `resumeTrigger`
-- `suggestedComment`
-- `details`
+1. transition du ticket vers "Blocked"
+2. commentaire sur le ticket
+3. `clearRun()`
 
 Exemple:
 
@@ -201,13 +201,13 @@ Point important:
 - en phase `IMPLEMENTATION`, `COMPLETED` ne veut pas dire que l'agent a cree les branches ou les pull requests
 - cela veut dire que le travail local est termine
 - l'orchestrateur inspecte ensuite les repositories modifies, cree les branches `devflow/...`, commit, push et ouvre les PRs
-- apres l'ACK HTTP de l'orchestrateur, le process OpenCode se termine et un nouveau process sera relance pour le ticket suivant ou la prochaine reprise
+- apres l'ACK HTTP de l'orchestrateur, le process OpenCode se termine
 
-Champs utilises:
+Effet dans l'orchestrateur:
 
-- `summary`
-- `artifacts`
-- `details`
+- `INFORMATION_COLLECTION` → chaine vers `IMPLEMENTATION`
+- `IMPLEMENTATION` → publish PR(s), transition "To Review", `clearRun()`
+- `TECHNICAL_VALIDATION` ou `BUSINESS_VALIDATION` → `clearRun()`
 
 Exemple:
 
@@ -231,13 +231,13 @@ Exemple:
     "repoChanges": [
       {
         "repository": "my-org/frontend-app",
-        "commitMessage": "APP-123: add export button",
-        "prTitle": "APP-123 - frontend export"
+        "commitMessage": "feat(export): add export button [APP-123]",
+        "prTitle": "feat(export): add export button [APP-123]"
       },
       {
         "repository": "my-org/backend-app",
-        "commitMessage": "APP-123: add export endpoint",
-        "prTitle": "APP-123 - backend export endpoint"
+        "commitMessage": "feat(export): add export endpoint [APP-123]",
+        "prTitle": "feat(export): add export endpoint [APP-123]"
       }
     ]
   },
@@ -260,8 +260,8 @@ Quand:
 
 But:
 
-- faire passer le run et le workflow en echec
-- terminer le process OpenCode apres l'ACK HTTP de l'orchestrateur
+- faire passer le ticket en "Blocked" avec un commentaire d'erreur
+- `clearRun()`
 
 Exemple explicite:
 
@@ -311,7 +311,7 @@ Quand:
 But:
 
 - fermer proprement le run
-- terminer le process OpenCode
+- `clearRun()`
 
 Exemple:
 

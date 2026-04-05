@@ -9,6 +9,8 @@ const blockerTypes = Object.values(BlockerType)
 const requestedFromValues = Object.values(RequestedFrom)
 const resumeTriggerValues = Object.values(ResumeTrigger)
 
+console.log("[devflow-tool] Devflow tool file loaded")
+
 function requiredEnv(name) {
   const value = process.env[name]
   if (!value || !value.trim()) {
@@ -17,12 +19,22 @@ function requiredEnv(name) {
   return value
 }
 
-const orchestratorUrl = requiredEnv("DEVFLOW_ORCHESTRATOR_URL")
-const workflowId = requiredEnv("DEVFLOW_WORKFLOW_ID")
-const agentRunId = requiredEnv("DEVFLOW_AGENT_RUN_ID")
-const stateFile = requiredEnv("DEVFLOW_AGENT_STATE_FILE")
+let _config = null
+function config() {
+  if (!_config) {
+    _config = {
+      orchestratorUrl: requiredEnv("DEVFLOW_ORCHESTRATOR_URL"),
+      workflowId: requiredEnv("DEVFLOW_WORKFLOW_ID"),
+      agentRunId: requiredEnv("DEVFLOW_AGENT_RUN_ID"),
+      stateFile: requiredEnv("DEVFLOW_AGENT_STATE_FILE")
+    }
+    console.log(`[devflow-tool] Config resolved for run ${_config.agentRunId} (workflow ${_config.workflowId})`)
+  }
+  return _config
+}
 
 async function readStateFile() {
+  const { stateFile, workflowId, agentRunId } = config()
   try {
     const raw = await readFile(stateFile, "utf8")
     return JSON.parse(raw)
@@ -37,6 +49,7 @@ async function readStateFile() {
 }
 
 async function writeStateFile(state) {
+  const { stateFile } = config()
   await mkdir(dirname(stateFile), { recursive: true })
   await writeFile(stateFile, JSON.stringify(state, null, 2))
 }
@@ -93,6 +106,7 @@ function normalizeDetails(details) {
 }
 
 async function sendEvent(type, payload, terminal = false) {
+  const { orchestratorUrl, workflowId, agentRunId } = config()
   const body = {
     eventId: `${agentRunId}:${randomUUID()}`,
     workflowId,

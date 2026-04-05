@@ -1,6 +1,10 @@
 .gradle/
 build/
+bin/
 .idea/
+.project
+.classpath
+.settings/
 .DS_Store
 agent/node_modules/
 agent/.npm/
