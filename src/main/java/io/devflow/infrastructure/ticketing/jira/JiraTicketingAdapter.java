@@ -24,8 +24,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.StringJoiner;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
+
 import org.jboss.logging.Logger;
 
 @ApplicationScoped
@@ -52,12 +51,6 @@ public class JiraTicketingAdapter implements TicketingPort {
     private static final String ADF_VERSION = "version";
     private static final int ADF_VERSION_VALUE = 1;
     private static final String ADF_CONTENT = "content";
-    private static final String ADF_PARAGRAPH = "paragraph";
-    private static final String ADF_TEXT = "text";
-    private static final String ADF_MARKS = "marks";
-    private static final String ADF_LINK = "link";
-    private static final String ADF_ATTRS = "attrs";
-    private static final String ADF_HREF = "href";
     private static final String PAYLOAD_FIELDS = "fields";
     private static final String PAYLOAD_STATUS = "status";
     private static final String PAYLOAD_NAME = "name";
@@ -68,7 +61,6 @@ public class JiraTicketingAdapter implements TicketingPort {
     private static final String PAYLOAD_MAX_RESULTS = "maxResults";
     private static final String PAYLOAD_TOTAL = "total";
     private static final String PAYLOAD_TO = "to";
-    private static final Pattern URL_PATTERN = Pattern.compile("https?://\\S+");
 
     private final HttpClient client = HttpClient.newBuilder()
         .connectTimeout(HTTP_CONNECT_TIMEOUT)
@@ -236,7 +228,7 @@ public class JiraTicketingAdapter implements TicketingPort {
     }
 
     private boolean matchesStatus(String currentStatus, String targetStatus) {
-        return currentStatus != null && targetStatus != null && currentStatus.equalsIgnoreCase(targetStatus);
+        return currentStatus != null && currentStatus.equalsIgnoreCase(targetStatus);
     }
 
     private int intValue(Object value, int fallback) {
@@ -296,58 +288,13 @@ public class JiraTicketingAdapter implements TicketingPort {
     }
 
     private Map<String, Object> buildCommentPayload(String comment) {
-        List<Map<String, Object>> paragraphs = new ArrayList<>();
-        String[] lines = (comment == null ? "" : comment).split("\\R", -1);
-        for (String line : lines) {
-            paragraphs.add(Map.of(
-                ADF_TYPE, ADF_PARAGRAPH,
-                ADF_CONTENT, buildParagraphContent(line)
-            ));
-        }
-        if (paragraphs.isEmpty()) {
-            paragraphs.add(Map.of(ADF_TYPE, ADF_PARAGRAPH, ADF_CONTENT, List.of()));
-        }
         return Map.of(
             ADF_BODY, Map.of(
                 ADF_TYPE, ADF_DOC,
                 ADF_VERSION, ADF_VERSION_VALUE,
-                ADF_CONTENT, paragraphs
+                ADF_CONTENT, MarkdownToAdfConverter.convert(comment)
             )
         );
-    }
-
-    private List<Map<String, Object>> buildParagraphContent(String line) {
-        if (line == null || line.isEmpty()) {
-            return List.of();
-        }
-
-        List<Map<String, Object>> content = new ArrayList<>();
-        Matcher matcher = URL_PATTERN.matcher(line);
-        int index = 0;
-        while (matcher.find()) {
-            appendTextNode(content, line.substring(index, matcher.start()));
-            content.add(Map.of(
-                ADF_TYPE, ADF_TEXT,
-                ADF_TEXT, matcher.group(),
-                ADF_MARKS, List.of(Map.of(
-                    ADF_TYPE, ADF_LINK,
-                    ADF_ATTRS, Map.of(ADF_HREF, matcher.group())
-                ))
-            ));
-            index = matcher.end();
-        }
-        appendTextNode(content, line.substring(index));
-        return content;
-    }
-
-    private void appendTextNode(List<Map<String, Object>> content, String text) {
-        if (text == null || text.isEmpty()) {
-            return;
-        }
-        content.add(Map.of(
-            ADF_TYPE, ADF_TEXT,
-            ADF_TEXT, text
-        ));
     }
 
     @SuppressWarnings("unchecked")
@@ -355,7 +302,6 @@ public class JiraTicketingAdapter implements TicketingPort {
         return value instanceof Map<?, ?> current ? (Map<String, Object>) current : Map.of();
     }
 
-    @SuppressWarnings("unchecked")
     private List<Map<String, Object>> listOfMap(Object value) {
         if (!(value instanceof List<?> list)) {
             return List.of();

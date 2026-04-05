@@ -110,7 +110,7 @@ public class GitHubCodeHostAdapter implements CodeHostPort {
 
                 runGit(repoPath, List.of("commit", "-m", instructions.commitMessage()));
                 String remoteUrl = buildRemoteUrl(repository);
-                runGit(repoPath, List.of("push", "--set-upstream", remoteUrl, "HEAD:refs/heads/" + branchName));
+                runGit(repoPath, List.of("push", "--force", "--set-upstream", remoteUrl, "HEAD:refs/heads/" + branchName));
                 LOG.infof("Pushed branch %s for repository %s", branchName, repository);
 
                 Map<String, Object> existingPr = findOpenPullRequest(repository, branchName);
