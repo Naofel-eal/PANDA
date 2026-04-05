@@ -1,91 +1,114 @@
-# Devflow Workflow
+# Workflow
 
-Canonical end-to-end workflow for the orchestrator.
+End-to-end workflow for the DevFlow orchestrator.
 
-Dans l'implementation actuelle (v0 stateless):
+## Flow summary
 
-- tout nouveau ticket eligible passe d'abord par un run agent `INFORMATION_COLLECTION`
-- ce run ne code pas encore: il valide la comprehension, detecte les ambiguites
-- il emet soit `INPUT_REQUIRED` (ticket bloque), soit `COMPLETED` (chaine vers `IMPLEMENTATION`)
-- l'orchestrateur est stateless: pas de base de donnees, un seul `volatile currentRun`
-- l'intake est polling-only depuis Jira et GitHub
+1. Every eligible ticket starts with an `INFORMATION_COLLECTION` agent run — the agent explores the codebase, validates its understanding, and detects ambiguities.
+2. If the agent needs clarification, it calls `devflow_request_input` and the ticket is blocked with a Jira comment.
+3. If the agent has enough context, it calls `devflow_complete_run` and the orchestrator chains directly to an `IMPLEMENTATION` run.
+4. After implementation, the orchestrator commits, pushes, and creates PRs. The ticket moves to "To Review".
+5. Review comments on PRs trigger new agent runs to address feedback.
+6. Once all PRs are merged, the ticket moves to "To Validate".
+
+## Diagram
 
 ```mermaid
 flowchart TD
-    start([Polling cycle])
+    start([Poll cycle])
     ignored([No action])
     done([To Validate])
 
-    subgraph polling["Polling Discovery"]
-        jiraPoll{Jira: ticket in To Do or Blocked?}
-        githubPoll{GitHub: new review comment or merged PR?}
+    subgraph polling["Polling"]
         busy{Agent busy?}
+        jiraPoll{Jira: To Do or Blocked ticket?}
+        githubPoll{GitHub: review comment or merged PR?}
     end
 
     subgraph info["Information Collection"]
-        eligible{Work item eligible?}
-        alreadyAssessed{Already assessed and no new info?}
-        enoughInfo{Enough information?}
-        postEligibility[Post eligibility comment on ticket]
+        eligible{Eligible?}
+        alreadySkipped{Already assessed?}
+        postEligibility[Post eligibility comment]
+        enoughInfo{Enough info?}
     end
 
     subgraph impl["Implementation"]
-        implement[Agent implements solution]
-        publishChanges[Orchestrator: commit, push, create PR]
-        moveToReview[Transition ticket to To Review]
+        implement[Agent implements]
+        publish[Commit, push, create PR]
+        toReview[Ticket -> To Review]
     end
 
-    subgraph tech["Technical Validation"]
-        reviewComment{New review comment on devflow PR?}
-        commentAfterCommit{Comment after last commit?}
+    subgraph review["Review"]
+        reviewComment{New review comment?}
+        afterCommit{After last commit?}
     end
 
-    subgraph merge["Merge Detection"]
-        merged{devflow PR merged?}
-        ticketInReview{Ticket in To Review?}
-        moveToValidate[Transition ticket to To Validate]
+    subgraph mergeDetection["Merge"]
+        merged{PR merged?}
+        inReview{Ticket in To Review?}
+        toValidate[Ticket -> To Validate]
     end
 
-    subgraph blocked["Blocked Handling"]
-        inputRequired[Agent: INPUT_REQUIRED]
-        moveToBlocked[Transition ticket to Blocked + comment]
-        newUserComment{New user comment after DevFlow comment?}
+    subgraph blocked["Blocked"]
+        inputRequired[INPUT_REQUIRED]
+        toBlocked[Ticket -> Blocked + comment]
+        newComment{New user comment?}
     end
 
     start --> busy
     busy -- yes --> ignored
     busy -- no --> jiraPoll
 
-    jiraPoll -- To Do ticket found --> eligible
-    jiraPoll -- Blocked ticket found --> newUserComment
+    jiraPoll -- To Do --> eligible
+    jiraPoll -- Blocked --> newComment
     jiraPoll -- nothing --> githubPoll
 
-    eligible -- no --> alreadyAssessed
-    alreadyAssessed -- yes --> ignored
-    alreadyAssessed -- no --> postEligibility --> ignored
+    eligible -- no --> alreadySkipped
+    alreadySkipped -- yes --> ignored
+    alreadySkipped -- no --> postEligibility --> ignored
     eligible -- yes --> enoughInfo
 
     enoughInfo -- yes --> implement
     enoughInfo -- no --> inputRequired
 
-    implement -- COMPLETED --> publishChanges --> moveToReview
+    implement -- COMPLETED --> publish --> toReview
     implement -- INPUT_REQUIRED --> inputRequired
-    implement -- FAILED --> moveToBlocked
+    implement -- FAILED --> toBlocked
 
-    inputRequired --> moveToBlocked
+    inputRequired --> toBlocked
 
-    newUserComment -- yes --> implement
-    newUserComment -- no --> ignored
+    newComment -- yes --> implement
+    newComment -- no --> ignored
 
-    githubPoll -- review comment --> reviewComment
-    githubPoll -- merged PR --> merged
+    githubPoll -- review --> reviewComment
+    githubPoll -- merged --> merged
     githubPoll -- nothing --> ignored
 
-    reviewComment -- yes --> commentAfterCommit
-    commentAfterCommit -- yes --> implement
-    commentAfterCommit -- no --> ignored
+    reviewComment -- yes --> afterCommit
+    afterCommit -- yes --> implement
+    afterCommit -- no --> ignored
 
-    merged -- yes --> ticketInReview
-    ticketInReview -- yes --> moveToValidate --> done
-    ticketInReview -- no --> ignored
+    merged -- yes --> inReview
+    inReview -- yes --> toValidate --> done
+    inReview -- no --> ignored
 ```
+
+## Jira status transitions
+
+| From | To | Trigger |
+|------|----|---------|
+| To Do | In Progress | Agent run starts (`RUN_STARTED`) |
+| In Progress | To Review | Implementation completed, PRs created |
+| In Progress | Blocked | Agent needs input or fails |
+| Blocked | In Progress | New user comment triggers a new agent run |
+| To Review | In Progress | Review comment triggers a fix run |
+| To Review | To Validate | All PRs merged |
+
+## Phase chaining
+
+When `INFORMATION_COLLECTION` completes, the orchestrator chains directly to `IMPLEMENTATION`:
+
+1. `AgentEventService` receives `COMPLETED` for info collection
+2. `DevFlowRuntime.replacePhase(IMPLEMENTATION, newAgentRunId)` updates the volatile reference
+3. A new agent run is dispatched asynchronously with a 3-second delay (to avoid deadlock on the callback thread)
+4. The agent starts implementing on the same workspace

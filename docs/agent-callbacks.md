@@ -1,345 +1,179 @@
 # Agent Callbacks
 
-Ce document decrit exactement les callbacks HTTP que l'agent envoie a l'orchestrateur.
+HTTP contract between the agent container and the orchestrator.
 
-Les fichiers OpenCode associes a ces callbacks sont centralises sous `agent/opencode`, puis copies dans le workspace partage `/workspace/runs` avant chaque run:
+## Transport
 
-- `AGENTS.md` (instructions et output requirements de l'agent)
-- `opencode.json`
-- `.opencode/tools/devflow.js`
-- `.opencode/lib/devflow-constants.js`
+All callbacks are sent from the agent container to:
 
-Tous les callbacks partent du container agent vers:
+```
+POST /internal/agent-events
+```
 
-- `POST /internal/agent-events`
+The orchestrator sends commands to the agent at:
 
-Le schema HTTP accepte la structure suivante:
+```
+POST /internal/agent-runs
+POST /internal/agent-runs/{agentRunId}/cancel
+```
+
+## OpenCode project files
+
+The following files are maintained in `agent/opencode/` and copied into the shared workspace `/workspace/runs` before each run:
+
+| File | Purpose |
+|------|---------|
+| `AGENTS.md` | Agent instructions and output requirements |
+| `opencode.json` | OpenCode configuration (model, steps, permissions) |
+| `.opencode/tools/devflow.js` | Devflow tool definitions |
+| `.opencode/lib/devflow-constants.js` | Shared constants |
+| `.opencode/skills/*/SKILL.md` | Callback skill documentation |
+
+## Event schema
 
 ```json
 {
-  "eventId": "run-id:uuid",
+  "eventId": "agentRunId:uuid",
   "workflowId": "uuid",
   "agentRunId": "uuid",
   "type": "RUN_STARTED | PROGRESS_REPORTED | INPUT_REQUIRED | COMPLETED | FAILED | CANCELLED",
-  "occurredAt": "2026-04-03T10:15:00Z",
-  "providerRunRef": "optional",
-  "summary": "optional",
-  "blockerType": "optional",
-  "reasonCode": "optional",
-  "requestedFrom": "optional",
-  "resumeTrigger": "optional",
-  "suggestedComment": "optional",
-  "artifacts": {},
-  "details": {}
+  "occurredAt": "ISO-8601",
+  "summary": "string",
+  "blockerType": "string",
+  "reasonCode": "string",
+  "requestedFrom": "DEV | BUSINESS",
+  "resumeTrigger": "string",
+  "suggestedComment": "string",
+  "artifacts": { ... },
+  "details": { ... }
 }
 ```
 
-## Champs obligatoires
+Required: `eventId`, `workflowId`, `agentRunId`, `type`. All other fields are optional.
 
-- `eventId`
-- `workflowId`
-- `agentRunId`
-- `type`
+## Event reference
 
-## Champs optionnels
+### `RUN_STARTED`
 
-- `occurredAt`
-- `providerRunRef`
-- `summary`
-- `blockerType`
-- `reasonCode`
-- `requestedFrom`
-- `resumeTrigger`
-- `suggestedComment`
-- `artifacts`
-- `details`
+Sent by the agent runtime (not OpenCode) after spawning the OpenCode process.
 
-## Evenements envoyes par l'agent
-
-## Mapping callback -> emission
-
-- `RUN_STARTED`
-  - emis par le runtime agent
-  - pas de skill OpenCode
-- `PROGRESS_REPORTED`
-  - emis par OpenCode via `devflow-report-progress` skill
-- `INPUT_REQUIRED`
-  - emis par OpenCode via `devflow-request-input` skill
-- `COMPLETED`
-  - emis par OpenCode via `devflow-complete-run` skill
-- `FAILED`
-  - emis par OpenCode via `devflow-fail-run` skill
-  - ou par le runtime agent en fallback si OpenCode sort sans evenement terminal
-- `CANCELLED`
-  - emis par le runtime agent
-  - pas de skill OpenCode
-
-## `RUN_STARTED`
-
-Qui l'envoie:
-
-- le runtime agent
-
-Quand:
-
-- juste apres le demarrage du process OpenCode
-
-But:
-
-- dire a l'orchestrateur que le run est effectivement parti
-
-Effet dans l'orchestrateur:
-
-- transition du ticket vers "In Progress"
-
-Exemple:
+**Effect**: ticket → "In Progress".
 
 ```json
 {
-  "eventId": "run-123:5d3d4f3d-2661-42dd-9d76-c0f5c8aa9b4a",
-  "workflowId": "d5a2d1c8-cb18-4e73-a634-b5f6dce8b31f",
-  "agentRunId": "6d37aabd-9e8f-4e03-a0b2-89dcf0cc0f37",
   "type": "RUN_STARTED",
-  "occurredAt": "2026-04-03T10:15:00Z",
-  "providerRunRef": "opencode:6d37aabd-9e8f-4e03-a0b2-89dcf0cc0f37",
   "summary": "OpenCode run started for phase IMPLEMENTATION."
 }
 ```
 
-## `PROGRESS_REPORTED`
+### `PROGRESS_REPORTED`
 
-Qui l'envoie:
+Sent by OpenCode via `devflow_report_progress` during execution.
 
-- OpenCode via `devflow_report_progress`
-
-Quand:
-
-- pendant l'execution
-
-But:
-
-- donner une trace lisible de l'avancement sans terminer le run
-
-Effet dans l'orchestrateur:
-
-- log seulement, aucune transition
-
-Exemple:
+**Effect**: log only.
 
 ```json
 {
-  "eventId": "run-123:0fd0ce7d-3bc1-4c74-96ba-2a874b8a9d25",
-  "workflowId": "d5a2d1c8-cb18-4e73-a634-b5f6dce8b31f",
-  "agentRunId": "6d37aabd-9e8f-4e03-a0b2-89dcf0cc0f37",
   "type": "PROGRESS_REPORTED",
-  "occurredAt": "2026-04-03T10:17:00Z",
-  "summary": "Frontend terminee, validation backend en cours.",
-  "details": {
-    "step": "validation"
-  }
+  "summary": "Frontend implementation done, running backend tests."
 }
 ```
 
-## `INPUT_REQUIRED`
+### `INPUT_REQUIRED`
 
-Qui l'envoie:
+Sent by OpenCode via `devflow_request_input` when blocked on missing information.
 
-- OpenCode via `devflow_request_input`
-
-Quand:
-
-- quand il manque une information externe
-
-But:
-
-- demander a l'orchestrateur de bloquer le workflow
-- demander a l'orchestrateur de commenter le ticket
-
-Effet dans l'orchestrateur:
-
-1. transition du ticket vers "Blocked"
-2. commentaire sur le ticket
-3. `clearRun()`
-
-Exemple:
+**Effect**: ticket → "Blocked" + comment posted + `clearRun()`.
 
 ```json
 {
-  "eventId": "run-123:660431f4-f36e-4cdc-b8d2-6c79bb4b9cdb",
-  "workflowId": "d5a2d1c8-cb18-4e73-a634-b5f6dce8b31f",
-  "agentRunId": "6d37aabd-9e8f-4e03-a0b2-89dcf0cc0f37",
   "type": "INPUT_REQUIRED",
-  "occurredAt": "2026-04-03T10:19:00Z",
   "blockerType": "MISSING_TICKET_INFORMATION",
   "reasonCode": "ACCEPTANCE_CRITERIA_AMBIGUOUS",
-  "summary": "Le comportement attendu est ambigu.",
+  "summary": "The expected behavior is ambiguous.",
   "requestedFrom": "BUSINESS",
   "resumeTrigger": "WORK_ITEM_COMMENT_RECEIVED",
-  "suggestedComment": "Peux-tu preciser si l export doit contenir uniquement les donnees filtrees ou toutes les donnees ?",
-  "details": {
-    "options": ["filtered", "all"]
-  }
+  "suggestedComment": "Can you clarify the expected export scope?"
 }
 ```
 
-## `COMPLETED`
+### `COMPLETED`
 
-Qui l'envoie:
+Sent by OpenCode via `devflow_complete_run` when the run is finished.
 
-- OpenCode via `devflow_complete_run`
+**Effect** by phase:
 
-Quand:
+| Phase | Orchestrator action |
+|-------|-------------------|
+| `INFORMATION_COLLECTION` | Chain to `IMPLEMENTATION` (async, 3s delay) |
+| `IMPLEMENTATION` | Commit, push, create/reuse PRs → ticket → "To Review" → `clearRun()` |
+| `TECHNICAL_VALIDATION` | `clearRun()` |
+| `BUSINESS_VALIDATION` | `clearRun()` |
 
-- quand le run est termine avec succes
-
-But:
-
-- signaler que le travail local est fini
-
-Point important:
-
-- en phase `IMPLEMENTATION`, `COMPLETED` ne veut pas dire que l'agent a cree les branches ou les pull requests
-- cela veut dire que le travail local est termine
-- l'orchestrateur inspecte ensuite les repositories modifies, cree les branches `devflow/...`, commit, push et ouvre les PRs
-- apres l'ACK HTTP de l'orchestrateur, le process OpenCode se termine
-
-Effet dans l'orchestrateur:
-
-- `INFORMATION_COLLECTION` → chaine vers `IMPLEMENTATION`
-- `IMPLEMENTATION` → publish PR(s), transition "To Review", `clearRun()`
-- `TECHNICAL_VALIDATION` ou `BUSINESS_VALIDATION` → `clearRun()`
-
-Exemple:
+Important: `COMPLETED` in `IMPLEMENTATION` means "local work is done". The orchestrator creates all `devflow/*` branches and pull requests.
 
 ```json
 {
-  "eventId": "run-123:b1d7227b-4c84-406a-a2a6-d54bf4f9b0b2",
-  "workflowId": "d5a2d1c8-cb18-4e73-a634-b5f6dce8b31f",
-  "agentRunId": "6d37aabd-9e8f-4e03-a0b2-89dcf0cc0f37",
   "type": "COMPLETED",
-  "occurredAt": "2026-04-03T10:25:00Z",
-  "summary": "Implementation locale terminee pour le frontend et le backend.",
+  "summary": "Implementation finished for frontend and backend.",
   "artifacts": {
-    "changedFiles": [
-      "frontend-app/src/ExportButton.tsx",
-      "backend-app/src/export/service.ts"
-    ],
-    "validationCommands": [
-      "pnpm test",
-      "./gradlew test"
-    ],
+    "changedFiles": ["frontend/src/Health.tsx", "backend/src/health.js"],
+    "validationCommands": ["npm test"],
     "repoChanges": [
       {
-        "repository": "my-org/frontend-app",
-        "commitMessage": "feat(export): add export button [APP-123]",
-        "prTitle": "feat(export): add export button [APP-123]"
-      },
-      {
-        "repository": "my-org/backend-app",
-        "commitMessage": "feat(export): add export endpoint [APP-123]",
-        "prTitle": "feat(export): add export endpoint [APP-123]"
+        "repository": "my-org/frontend",
+        "commitMessage": "feat(health): add health status component [APP-123]",
+        "prTitle": "feat(health): add health status component [APP-123]"
       }
     ]
-  },
-  "details": {
-    "followUpNotes": "Backend endpoint assumes existing auth middleware."
   }
 }
 ```
 
-## `FAILED`
+### `FAILED`
 
-Qui l'envoie:
+Sent by OpenCode via `devflow_fail_run`, or by the agent runtime as fallback when OpenCode exits without a terminal event.
 
-- OpenCode via `devflow_fail_run`
-- ou le runtime agent en fallback si OpenCode sort sans evenement terminal
-
-Quand:
-
-- quand le run echoue
-
-But:
-
-- faire passer le ticket en "Blocked" avec un commentaire d'erreur
-- `clearRun()`
-
-Exemple explicite:
+**Effect**: ticket → "Blocked" + error comment + `clearRun()`.
 
 ```json
 {
-  "eventId": "run-123:20c52d3f-e2a2-4d7d-9ee5-901dbaf4cc95",
-  "workflowId": "d5a2d1c8-cb18-4e73-a634-b5f6dce8b31f",
-  "agentRunId": "6d37aabd-9e8f-4e03-a0b2-89dcf0cc0f37",
   "type": "FAILED",
-  "occurredAt": "2026-04-03T10:27:00Z",
-  "summary": "Les tests echouent sur une regression non comprise.",
-  "details": {
-    "failingCommand": "pnpm test"
-  }
+  "summary": "Tests fail on a regression.",
+  "details": { "failingCommand": "npm test" }
 }
 ```
 
-Exemple fallback runtime:
+Fallback example (runtime-generated):
 
 ```json
 {
-  "eventId": "run-123:50b7b52c-a994-4ab9-a9fd-6c9b3a5b9ce8",
-  "workflowId": "d5a2d1c8-cb18-4e73-a634-b5f6dce8b31f",
-  "agentRunId": "6d37aabd-9e8f-4e03-a0b2-89dcf0cc0f37",
   "type": "FAILED",
-  "occurredAt": "2026-04-03T10:28:00Z",
-  "summary": "OpenCode exited with code 1.",
+  "summary": "OpenCode exited with code 1 without sending a terminal event.",
   "details": {
     "exitCode": 1,
-    "signal": null,
     "stdoutTail": "...",
     "stderrTail": "..."
   }
 }
 ```
 
-## `CANCELLED`
+### `CANCELLED`
 
-Qui l'envoie:
+Sent by the agent runtime when the orchestrator cancels a run.
 
-- le runtime agent
-
-Quand:
-
-- quand l'orchestrateur annule un run actif
-
-But:
-
-- fermer proprement le run
-- `clearRun()`
-
-Exemple:
+**Effect**: `clearRun()`.
 
 ```json
 {
-  "eventId": "run-123:0d66c2f9-f3d4-4ee7-94db-6d431ab0f15d",
-  "workflowId": "d5a2d1c8-cb18-4e73-a634-b5f6dce8b31f",
-  "agentRunId": "6d37aabd-9e8f-4e03-a0b2-89dcf0cc0f37",
   "type": "CANCELLED",
-  "occurredAt": "2026-04-03T10:29:00Z",
-  "summary": "Run 6d37aabd-9e8f-4e03-a0b2-89dcf0cc0f37 was cancelled by the orchestrator.",
-  "details": {
-    "exitCode": null,
-    "signal": "SIGTERM",
-    "stdoutTail": "...",
-    "stderrTail": "..."
-  }
+  "summary": "Run was cancelled by the orchestrator."
 }
 ```
 
-## Regles importantes
+## Terminal event rules
 
-- un seul evenement terminal doit exister par run:
-  - `INPUT_REQUIRED`
-  - `COMPLETED`
-  - `FAILED`
-  - `CANCELLED`
-- `RUN_STARTED` et `PROGRESS_REPORTED` sont non terminaux
-- l'agent ne cree jamais directement de ticket, branche, commit, push ou pull request
-- l'agent decrit ce qui s'est passe
-- l'orchestrateur transforme ce fait en transition metier et en actions externes
+- Exactly one terminal event per run: `INPUT_REQUIRED`, `COMPLETED`, `FAILED`, or `CANCELLED`
+- `RUN_STARTED` and `PROGRESS_REPORTED` are non-terminal
+- If OpenCode exits without a terminal event, the runtime sends `FAILED` as fallback
+- The agent never creates tickets, branches, commits, PRs, or Jira comments directly
