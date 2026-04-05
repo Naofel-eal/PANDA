@@ -1,0 +1,25 @@
+FROM gradle:8.14.2-jdk21 AS build
+
+WORKDIR /workspace
+
+COPY gradle/ gradle/
+COPY gradlew gradlew
+COPY gradlew.bat gradlew.bat
+COPY build.gradle settings.gradle gradle.properties ./
+COPY src/ src/
+
+RUN ./gradlew --no-daemon quarkusBuild -x test
+
+FROM eclipse-temurin:21-jre
+
+WORKDIR /deployments
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends git ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+
+COPY --from=build /workspace/build/quarkus-app/ /deployments/
+
+EXPOSE 8080
+
+ENTRYPOINT ["java", "-jar", "/deployments/quarkus-run.jar"]

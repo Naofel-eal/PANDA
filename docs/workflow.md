@@ -2,19 +2,18 @@
 
 Canonical end-to-end workflow for the orchestrator.
 
+Dans l'implementation actuelle, tout nouveau ticket eligible passe d'abord par un run agent `INFORMATION_COLLECTION`.
+Ce run ne code pas encore: il valide la comprehension, detecte les ambiguites et emet soit `INPUT_REQUIRED`, soit `COMPLETED`, ce qui declenche ensuite la phase `IMPLEMENTATION`.
+
 ```mermaid
 flowchart TD
     start([Workflow signal received])
     ignored([No action])
-    techDone([Done after technical validation])
     done([Done])
 
     subgraph info["Information Collection"]
         eligible{Work item eligible?}
         enoughInfo{Enough information to start?}
-        designNeeded{Design context required?}
-        designLinked{Design context linked?}
-        fetchDesign[Fetch design context]
         envAvailable{Execution environment available?}
         waitInfo[[Blocked: waiting for missing information]]
         waitEnv[[Blocked: waiting for execution environment]]
@@ -41,8 +40,6 @@ flowchart TD
     end
 
     subgraph biz["Business Validation"]
-        bizEnabled{Business validation enabled?}
-        exposeBuild[Deploy or expose validation build]
         notifyBiz[Comment work item and move it to business validation]
         waitBiz[[Waiting for business validation]]
         validated{Business validated?}
@@ -65,16 +62,9 @@ flowchart TD
     eligible -- yes --> enoughInfo
 
     enoughInfo -- no --> waitInfo
-    enoughInfo -- yes --> designNeeded
+    enoughInfo -- yes --> envAvailable
 
     waitInfo -. new ticket comment .-> enoughInfo
-
-    designNeeded -- no --> envAvailable
-    designNeeded -- yes --> designLinked
-
-    designLinked -- no --> waitInfo
-    designLinked -- yes --> fetchDesign
-    fetchDesign --> envAvailable
 
     envAvailable -- no --> waitEnv
     envAvailable -- yes --> prepareWorkspace
@@ -95,13 +85,12 @@ flowchart TD
     waitTechInfo -. new PR/MR comment or updated ticket .-> canResolveTech
 
     merged -- no --> waitMerge
-    merged -- yes --> bizEnabled
+    merged -- yes --> notifyBiz
 
     waitMerge -. review comment .-> reviewComment
     waitMerge -. merge event .-> merged
 
-    bizEnabled -- no --> techDone
-    bizEnabled -- yes --> exposeBuild --> notifyBiz --> waitBiz
+    notifyBiz --> waitBiz
 
     waitBiz -. validation result .-> validated
     waitBiz -. business comment .-> bizComment

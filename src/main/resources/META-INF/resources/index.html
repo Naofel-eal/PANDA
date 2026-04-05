@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Devflow Ticket History</title>
+  <link rel="stylesheet" href="/dashboard.css?v=20260405-1">
+</head>
+<body>
+  <main class="page-shell">
+    <header class="page-header">
+      <div>
+        <p class="eyebrow">Devflow</p>
+        <h1>Ticket history</h1>
+        <p class="page-copy">
+          Comments and state transitions only. Tickets are grouped and sorted by most recent activity.
+        </p>
+      </div>
+      <div class="header-meta">
+        <div class="meta-item">
+          <span class="meta-label">Last refresh</span>
+          <strong id="last-refresh">-</strong>
+        </div>
+        <div class="meta-item">
+          <span class="meta-label">Source</span>
+          <strong>/api/v1/dashboard/tickets</strong>
+        </div>
+      </div>
+    </header>
+
+    <section class="toolbar">
+      <label class="search-field">
+        <span>Search</span>
+        <input id="search-input" type="search" placeholder="Ticket, title, status, comment">
+      </label>
+      <button id="refresh-button" type="button">Refresh</button>
+    </section>
+
+    <section id="tickets" class="ticket-list"></section>
+  </main>
+
+  <template id="ticket-template">
+    <article class="ticket-card">
+      <div class="ticket-header">
+        <div class="ticket-main">
+          <div class="ticket-heading">
+            <span class="ticket-key"></span>
+            <a class="ticket-link" target="_blank" rel="noreferrer">Open</a>
+          </div>
+          <h2 class="ticket-title"></h2>
+        </div>
+        <div class="ticket-badges">
+          <span class="ticket-badge ticket-phase"></span>
+          <span class="ticket-badge ticket-status"></span>
+        </div>
+      </div>
+
+      <div class="ticket-meta">
+        <span class="ticket-updated"></span>
+      </div>
+
+      <div class="history-list"></div>
+    </article>
+  </template>
+
+  <template id="history-entry-template">
+    <article class="history-entry">
+      <div class="history-top">
+        <strong class="history-title"></strong>
+        <time class="history-date"></time>
+      </div>
+      <p class="history-summary"></p>
+    </article>
+  </template>
+
+  <script type="module" src="/dashboard.js?v=20260405-1"></script>
+</body>
+</html>

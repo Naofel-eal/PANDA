@@ -1,0 +1,5 @@
+quarkus:
+  datasource:
+    db-kind: postgresql
+  flyway:
+    migrate-at-start: false

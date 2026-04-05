@@ -4,6 +4,19 @@
 
 Construire un orchestrateur Quarkus en architecture hexagonale capable de suivre un besoin metier depuis un ticket jusqu'a la validation technique, et eventuellement la validation metier, sans dependre d'un outil particulier comme Jira, GitHub, GitLab ou d'un environnement de developpement local permanent.
 
+Note d'implementation actuelle:
+
+- le mode minimal actuellement implemente pour ton projet est un mode polling-only
+- Jira est interroge periodiquement sur un epic cible et un statut cible
+- GitHub est interroge periodiquement pour les pull requests deja suivies par Devflow
+
+L'implementation presente dans ce repository suit cette architecture avec la topologie concrete suivante:
+
+- `postgres` pour la persistance
+- `orchestrator` Quarkus pour l'etat metier
+- `agent` OpenCode pour l'execution des runs
+- un workspace partage monte dans `orchestrator` et `agent`
+
 Le coeur doit raisonner avec des concepts neutres:
 
 - `WorkItem` au lieu de ticket Jira
@@ -44,6 +57,7 @@ Le coeur doit raisonner avec des concepts neutres:
 - webhook ticketing
 - webhook code host
 - webhook deployment
+- callback HTTP agent
 - scheduler de polling
 - CLI ou API admin
 
@@ -52,10 +66,60 @@ Le coeur doit raisonner avec des concepts neutres:
 - ticketing: Jira, Linear, Azure Boards, custom
 - code host: GitHub, GitLab, Bitbucket
 - git workspace: local, container, runner distant
-- design: Figma, URL simple, repository docs
+- agent runtime: container OpenCode appele en HTTP par l'orchestrateur
 - validation/deploiement: CI/CD, environment watcher
 - notification: email, Slack, Teams, commentaire ticket
 - persistence: PostgreSQL
+
+## Topologie conteneurisee mise en place
+
+### Reseaux
+
+- `control`
+  - `orchestrator <-> agent`
+- `data`
+  - `orchestrator <-> postgres`
+- `egress`
+  - acces sortant pour l'orchestrateur
+  - acces sortant optionnel pour l'agent si OpenCode utilise un provider LLM heberge
+
+### Secrets
+
+- Jira/GitHub/GitLab/PostgreSQL restent cote `orchestrator`
+- l'agent n'a pas acces a PostgreSQL
+- l'agent ne voit pas les credentials metier
+- l'agent ne peut signaler son etat que via `POST /internal/agent-events`
+- le token GitHub n'est pas injecte dans le container agent
+- les remotes Git du workspace partage restent sans credentials embarques
+- seul l'orchestrateur injecte l'authentification GitHub au moment d'executer `clone`, `fetch` et `push`
+
+### Workspace partage
+
+Le workspace est monte dans les deux containers sous `/workspace/runs`.
+
+Le layout concret maintenant implemente est le suivant:
+
+```text
+/workspace/runs/
+├─ AGENTS.md
+├─ opencode.json
+├─ .opencode/
+│  ├─ skills/
+│  └─ tools/
+├─ repo-a/
+└─ repo-b/
+```
+
+Principes:
+
+- le root du workspace est aussi le projet OpenCode effectif de l'agent
+- les repositories sont clones directement sous `/workspace/runs`
+- avant chaque run, le runtime agent copie le template `agent/opencode` vers `/workspace/runs`
+- au demarrage d'un nouveau ticket, chaque repository est mis a jour depuis sa branche source configuree
+- apres un commentaire de review sur une PR existante, le repository concerne est re-checkoute sur la branche de travail precedemment publiee
+- apres publication, chaque repository est reset sur sa branche source
+
+Le chemin effectif est injecte dans `inputSnapshot.workspace` a chaque lancement.
 
 ## Modules recommandes
 
@@ -64,12 +128,13 @@ Pour Quarkus, je recommande un decoupage simple en plusieurs modules Maven/Gradl
 - `devflow-domain`
 - `devflow-application`
 - `devflow-adapters-inbound-rest`
+- `devflow-adapters-inbound-agent-callback`
 - `devflow-adapters-inbound-scheduler`
 - `devflow-adapters-outbound-persistence-postgres`
 - `devflow-adapters-outbound-ticketing-jira`
 - `devflow-adapters-outbound-codehost-github`
 - `devflow-adapters-outbound-codehost-gitlab`
-- `devflow-adapters-outbound-design-figma`
+- `devflow-adapters-outbound-agent-http`
 - `devflow-adapters-outbound-workspace-local`
 - `devflow-adapters-outbound-workspace-container`
 - `devflow-bootstrap-quarkus`
@@ -82,12 +147,62 @@ Version 1 pragmatique:
 
 Tu n'as pas besoin d'un systeme de plugins dynamique en V1. Pour l'opensource, publier des SPI propres suffit largement.
 
+## Implementation actuelle du repository
+
+Le repository n'est pas encore decoupe en multi-modules Gradle. La version actuelle privilegie une livraison executable rapide:
+
+- un module Quarkus unique pour l'orchestrateur
+- un runtime agent Node/OpenCode sous `agent/`
+- une orchestration Docker Compose sous [compose.yaml](/Users/naof.elelalouani/Documents/Dev/Perso/devflow/compose.yaml)
+
+Le decoupage hexagonal est maintenant aligne sur trois dossiers racine:
+
+- `domain`
+  - objets metier
+  - enums metier
+  - exceptions metier
+- `application`
+  - use cases
+  - services applicatifs
+  - ports a implementer par l'infrastructure
+  - ports de persistance pour isoler PostgreSQL
+- `infrastructure`
+  - `persistence/postgres`
+  - `ticketing/jira`
+  - `codehost/github`
+  - `agent/opencode`
+  - `http`
+  - `scheduler`
+  - `support`
+
+Regle d'implementation actuellement respectee:
+
+- `domain` et `application` ne dependent pas des entites JPA ni des repositories Panache
+- la persistance PostgreSQL est mappee uniquement dans `infrastructure/persistence/postgres`
+- les cas d'usage manipulent des objets de `domain.model` et passent par des ports applicatifs
+
+Les integrations minimales effectivement implementees sont:
+
+- Jira
+  - webhook entrant
+  - ajout de commentaire de ticket
+- GitHub
+  - webhook entrant review/merge
+  - publication locale `git` + creation de pull request via API GitHub
+- OpenCode
+  - lancement de run par HTTP
+  - callback d'evenements agent par HTTP
+  - reutilisation possible d'une configuration OpenCode utilisateur montee en lecture seule dans le container agent et fusionnee avec le template Devflow centralise sous [agent/opencode](/Users/naof.elelalouani/Documents/Dev/Perso/devflow/agent/opencode)
+  - recherche d'information internet possible via `websearch` et `webfetch`
+
 ## Ports metier
 
 ### Ports entrants
 
 - `WorkflowSignalHandler`
   - recoit un signal normalise depuis un adapter entrant
+- `AgentEventHandler`
+  - recoit un evenement structure emis par un agent runtime
 - `WorkflowAdminUseCase`
   - permet de reprendre, bloquer, annuler, reindexer un workflow
 
@@ -106,9 +221,9 @@ Tu n'as pas besoin d'un systeme de plugins dynamique en V1. Pour l'opensource, p
   - creer un code change
   - lire reviews/commentaires
   - detecter merge
-- `DesignPort`
-  - lire les liens de design
-  - recuperer le contenu utile
+- `AgentRuntimePort`
+  - lancer une execution agent
+  - annuler une execution agent
 - `ExecutionEnvironmentPort`
   - provisionner un workspace
   - executer des commandes
@@ -185,6 +300,48 @@ Je recommande de separer phase et statut pour eviter l'explosion du nombre d'eta
 - `FAILED`
 - `CANCELLED`
 
+### AgentRun
+
+Execution bornee d'un agent pour un workflow donne.
+
+Champs minimum:
+
+- `id`
+- `workflowId`
+- `phase`
+- `status`
+- `inputSnapshot`
+- `providerRunRef`
+- `startedAt`
+- `endedAt`
+
+### AgentCommand
+
+Commande envoyee par l'orchestrateur au runtime agent.
+
+Types recommandes:
+
+- `START_RUN`
+- `CANCEL_RUN`
+
+Transport concret:
+
+- `POST /internal/agent-runs`
+- `POST /internal/agent-runs/{agentRunId}/cancel`
+
+### AgentEvent
+
+Evenement envoye par le runtime agent a l'orchestrateur.
+
+Types recommandes:
+
+- `RUN_STARTED`
+- `PROGRESS_REPORTED`
+- `INPUT_REQUIRED`
+- `COMPLETED`
+- `FAILED`
+- `CANCELLED`
+
 ### Blocker
 
 Un blocage est un objet metier a part entiere.
@@ -206,7 +363,6 @@ Exemples de `type`:
 
 - `MISSING_TICKET_INFORMATION`
 - `NOT_ELIGIBLE`
-- `MISSING_DESIGN_REFERENCE`
 - `MISSING_REPOSITORY_MAPPING`
 - `MISSING_TECHNICAL_FEEDBACK_CONTEXT`
 - `WAITING_TECHNICAL_REVIEW`
@@ -246,6 +402,189 @@ Exemples de `type`:
 
 Le coeur n'appelle jamais directement Jira, GitHub ou GitLab. Il appelle des ports.
 
+## Communication orchestrateur-agent
+
+Le point cle est le suivant:
+
+- l'orchestrateur possede l'etat metier
+- l'agent execute une mission bornee
+- l'agent ne modifie jamais directement un ticket ou le workflow
+
+Le bon modele n'est pas une conversation libre. C'est un modele `commande -> execution -> evenements`.
+
+Dans l'architecture cible:
+
+- l'orchestrateur appelle le container agent en HTTP
+- le container agent execute OpenCode
+- OpenCode utilise des outils qui envoient des appels HTTP vers l'orchestrateur
+- l'orchestrateur persiste tout dans PostgreSQL et decide des transitions
+
+L'agent:
+
+- n'a pas acces a PostgreSQL
+- n'a pas acces a Jira, GitHub ou GitLab
+- n'a pas acces aux secrets metier
+- ne peut parler qu'a l'API interne de l'orchestrateur
+
+Cela permet d'isoler les secrets dans le container orchestrateur.
+
+### Lancement de l'agent
+
+1. L'orchestrateur decide qu'une execution est necessaire.
+2. Il construit un `AgentRun` avec un `inputSnapshot`.
+3. Il persiste le `AgentRun` en base.
+4. Il envoie une commande `START_RUN` via `AgentRuntimePort`.
+5. Le container agent demarre OpenCode et emet `RUN_STARTED`.
+
+Le `inputSnapshot` doit contenir uniquement le contexte utile:
+
+- identite du workflow
+- phase courante
+- resume du ticket
+- references du ticket et du code change si elles existent
+- contraintes d'execution
+- resume du run precedent si reprise
+
+### Ce que l'orchestrateur envoie
+
+Exemple de commande:
+
+```json
+{
+  "commandId": "cmd-123",
+  "workflowId": "wf-456",
+  "agentRunId": "run-789",
+  "type": "START_RUN",
+  "phase": "IMPLEMENTATION",
+  "objective": "Implement work item APP-123",
+  "inputSnapshot": {
+    "workItem": {
+      "system": "jira",
+      "key": "APP-123",
+      "title": "Add export button"
+    },
+    "repositories": ["org/frontend-app"],
+    "acceptanceCriteria": [
+      "Export current filtered results"
+    ],
+    "previousRunSummary": null
+  }
+}
+```
+
+### Ce que l'agent renvoie
+
+L'agent ne renvoie pas du texte libre pour piloter le workflow. Il renvoie des evenements structures.
+
+Exemple d'evenement de blocage:
+
+```json
+{
+  "eventId": "evt-321",
+  "workflowId": "wf-456",
+  "agentRunId": "run-789",
+  "type": "INPUT_REQUIRED",
+  "blockerType": "MISSING_TICKET_INFORMATION",
+  "reasonCode": "ACCEPTANCE_CRITERIA_AMBIGUOUS",
+  "summary": "Two plausible implementations exist and the expected export scope is ambiguous.",
+  "requestedFrom": "BUSINESS",
+  "resumeTrigger": "NEW_COMMENT_ON_WORK_ITEM",
+  "suggestedComment": "Can you clarify whether the export must contain only filtered data or the entire dataset?"
+}
+```
+
+Dans ce modele:
+
+- l'agent constate un blocage
+- l'agent le decrit
+- l'orchestrateur transforme cela en `Blocker`
+- l'orchestrateur commente le ticket via `WorkItemPort`
+
+### Comment l'orchestrateur recoit les informations
+
+Je te conseille ce modele:
+
+- l'orchestrateur cree un `agent_run`
+- l'orchestrateur appelle `POST /internal/agent-runs` sur le container agent
+- le container agent execute OpenCode
+- OpenCode appelle des outils comme `devflow_request_input`
+- ces outils font `POST /internal/agent-events` vers l'orchestrateur
+- l'orchestrateur persiste `agent_event`
+- l'orchestrateur applique ensuite les transitions metier
+- l'orchestrateur reste le seul composant qui modifie `workflow_instance`
+
+Pourquoi PostgreSQL reste indispensable:
+
+- tu veux stocker l'etat courant des workflows
+- tu veux dedupliquer les evenements HTTP
+- tu veux garantir un seul `agent_run` actif
+- tu veux reprendre apres redemarrage
+- tu veux un audit complet des evenements recus
+- tu veux un composant DB separe du container orchestrateur
+
+Une implementation simple suffit:
+
+- endpoint `POST /internal/agent-events`
+- persistance transactionnelle des `agent_event`
+- deduplication par `event_id`
+- mise a jour transactionnelle du workflow
+
+### APIs internes
+
+API exposee par le container agent:
+
+- `POST /internal/agent-runs`
+  - demarre un nouveau run OpenCode
+- `POST /internal/agent-runs/{agentRunId}/cancel`
+  - arrete un run en cours
+
+API exposee par l'orchestrateur:
+
+- `POST /internal/agent-events`
+  - recoit les evenements structures emis par l'agent
+
+L'authentification doit etre interne:
+
+- bearer token interne
+- ou mTLS si tu veux durcir davantage
+
+### Comment l'agent demande le blocage d'un ticket
+
+Il ne demande pas "bloque le ticket" en langage libre.
+
+Il emet un evenement `INPUT_REQUIRED` avec:
+
+- `blockerType`
+- `reasonCode`
+- `summary`
+- `requestedFrom`
+- `resumeTrigger`
+- `suggestedComment`
+
+Puis l'orchestrateur fait lui-meme:
+
+1. creation du `workflow_blocker`
+2. passage du workflow en `WAITING_EXTERNAL_INPUT`
+3. commentaire sur le ticket
+4. journalisation de l'evenement
+
+### Reprise apres blocage
+
+Quand un nouveau commentaire arrive sur le ticket:
+
+1. l'adapter ticketing emet `WORK_ITEM_COMMENT_RECEIVED`
+2. l'orchestrateur recharge le workflow bloque
+3. il verifie si le commentaire suffit pour lever le `Blocker`
+4. si oui, il cloture le blocage
+5. il cree un nouveau `AgentRun`
+
+Je recommande pour la V1:
+
+- creer un nouveau `AgentRun`
+- fournir le resume du run precedent dans `inputSnapshot`
+
+C'est plus robuste que de garder une session LLM vivante pendant des heures ou des jours.
+
 ## Workflow cible
 
 ### 1. Information collection
@@ -262,7 +601,6 @@ Etapes:
 2. Verifier que l'item contient assez d'informations.
 3. Recuperer les artefacts utiles.
    - ticket
-   - design
    - contexte fonctionnel
    - mapping repo
 4. Si manque d'information:
@@ -279,13 +617,12 @@ Checks typiques:
 - description suffisante
 - criteres d'acceptation presents
 - repository cible determinable
-- design accessible si necessaire
 
 ### Reprise d'un ticket bloque
 
 Quand un nouveau commentaire arrive sur un ticket bloque:
 
-1. l'adapter ticketing envoie `WorkItemCommentReceived`
+1. l'adapter ticketing envoie `WORK_ITEM_COMMENT_RECEIVED`
 2. le moteur recharge le workflow
 3. il verifie si le commentaire concerne le `Blocker` actif
 4. il re-evalue la completude d'information
@@ -411,7 +748,7 @@ Cette representation est plus simple a maintenir, plus facile a exposer en API, 
 
 Je recommande:
 
-- PostgreSQL pour l'etat courant
+- PostgreSQL pour l'etat courant et l'audit
 - un journal d'evenements append-only pour l'audit
 - une outbox pour les commandes asynchrones
 
@@ -473,7 +810,28 @@ Exemples:
 - repo
 - branch
 - deployment
-- design document
+
+#### `agent_run`
+
+- `id`
+- `workflow_id`
+- `phase`
+- `status`
+- `input_snapshot_json`
+- `provider_run_ref`
+- `started_at`
+- `ended_at`
+
+#### `agent_event`
+
+- `id`
+- `agent_run_id`
+- `event_id`
+- `event_type`
+- `event_payload_json`
+- `occurred_at`
+- `processed_at`
+- `status`
 
 #### `inbox_event`
 
@@ -510,6 +868,17 @@ Tu simplifies:
 - les dashboards
 - la reprise sur incident
 - le debugging
+
+Je te recommande:
+
+- `workflow_instance`, `workflow_blocker`, `agent_run`, `agent_event` dans PostgreSQL
+- un index unique qui garantit un seul `agent_run` en statut `RUNNING`
+- un historique append-only des evenements agent
+
+Contraintes importantes:
+
+- unicite de `agent_event.event_id` pour dedupliquer les callbacks HTTP
+- unicite logique d'un seul `agent_run` actif a la fois
 
 ## Correlation des commentaires et reprise
 
@@ -562,18 +931,6 @@ Il doit etre pilote par:
 devflow:
   workflow:
     definition-id: default
-    phases:
-      information-collection:
-        enabled: true
-      implementation:
-        enabled: true
-      technical-validation:
-        enabled: true
-        merge-required: true
-      business-validation:
-        enabled: true
-        mode: auto-on-merge-to-branch
-        branch: develop
 
   eligibility:
     work-item-types:
@@ -585,8 +942,6 @@ devflow:
       - description
     required-links:
       - repository
-    optional-links:
-      - design
 
   adapters:
     work-item:
@@ -616,10 +971,10 @@ devflow:
           - org/backend-service
           - org/frontend-app
 
-    design:
+    agent-runtime:
       main:
-        type: figma
-        token: ${FIGMA_TOKEN}
+        type: http
+        base-url: http://agent:8081
 
     execution-environment:
       main:
@@ -655,6 +1010,7 @@ Exemple:
 
 - `WorkItemPort`
 - `CodeHostPort`
+- `AgentRuntimePort`
 - `ExecutionEnvironmentPort`
 - `DeploymentPort`
 
@@ -682,11 +1038,15 @@ Il ne doit voir que:
 
 - RESTEasy Reactive pour les webhooks
 - Scheduler Quarkus pour polling/reconciliation
-- Hibernate ORM + PostgreSQL pour l'etat
-- JSONB pour le contexte et les metadonnees adapter-specifiques
+- Hibernate ORM + PostgreSQL
+- colonnes JSONB pour le contexte et les metadonnees adapter-specifiques
 - Panache uniquement si tu veux aller vite, sinon repository classique
 - SmallRye Config pour la configuration YAML
 - SmallRye Fault Tolerance pour les appels externes
+
+## Catalogue d'evenements
+
+Le catalogue detaille des evenements et commandes est decrit dans [events.md](/Users/naof.elelalouani/Documents/Dev/Perso/devflow/docs/events.md).
 
 ## Sequence resumee
 

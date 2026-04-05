@@ -1,0 +1,7 @@
+.git
+.gradle
+build
+agent/node_modules
+agent/.npm
+agent/.cache
+**/.DS_Store
