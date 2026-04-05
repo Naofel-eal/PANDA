@@ -72,6 +72,7 @@ Outbound adapters:
 - Polls every minute (configurable via `JIRA_POLL_INTERVAL_MINUTES`)
 - Searches the configured epic for tickets in "To Do" status — picks the first eligible, starts an info-collection agent run
 - Searches for "Blocked" tickets — detects new user comments (author-based filtering via `/rest/api/3/myself`) and resumes the workflow
+- Searches for "To Validate" tickets — detects new user comments and starts a new implementation run
 - Skips ineligible tickets that already have an eligibility comment (with a 60-second grace period for reassessment)
 - If busy (`runtime.isBusy()`), the entire poll cycle is skipped
 
@@ -87,15 +88,15 @@ Two layers of defense-in-depth prevent a stuck run from blocking the system perm
 
 ### Layer 1 — Agent runtime timeout (primary)
 
-The Node.js runtime kills the OpenCode process after `maxRunDurationMs` (15 minutes). The process exit triggers a `FAILED` fallback callback to the orchestrator.
+The Node.js runtime kills the OpenCode process after `AGENT_MAX_RUN_DURATION_MINUTES` (default `15` minutes). The process exit triggers a `FAILED` fallback callback to the orchestrator.
 
 Sequence: timer expires → `SIGTERM` → wait 5s → `SIGKILL` if still alive → `handleProcessExit` → send `FAILED`
 
 ### Layer 2 — Orchestrator stale-run detection (backup)
 
-The polling jobs check `DevFlowRuntime.isStale()` before skipping for `isBusy()`. If a run exceeds `max-run-duration-minutes` (20 minutes, configurable via `AGENT_MAX_RUN_DURATION_MINUTES`), the orchestrator sends a cancel command and clears `currentRun` locally.
+The polling jobs check `DevFlowRuntime.isStale()` before skipping for `isBusy()`. If a run exceeds the hard timeout plus `AGENT_STALE_TIMEOUT_BUFFER_MINUTES` (defaults `15 + 5 = 20` minutes), the orchestrator sends a cancel command and clears `currentRun` locally.
 
-The two timers are deliberately staggered (15 min agent, 20 min orchestrator) so Layer 1 fires first under normal conditions. Layer 2 only activates if the agent runtime itself is unreachable or stuck.
+The two timers are deliberately staggered (default `15` min agent, `20` min orchestrator) so Layer 1 fires first under normal conditions. Layer 2 only activates if the agent runtime itself is unreachable or stuck.
 
 ## Security boundaries
 

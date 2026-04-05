@@ -25,6 +25,7 @@ services:
     environment:
       PORT: 8081
       DEVFLOW_ORCHESTRATOR_URL: http://orchestrator:8080
+      AGENT_MAX_RUN_DURATION_MINUTES: ${AGENT_MAX_RUN_DURATION_MINUTES:-15}
     volumes:
       - workspace-runs:/workspace/runs
       - agent-state:/var/lib/devflow-agent

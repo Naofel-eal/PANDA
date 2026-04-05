@@ -2,12 +2,18 @@ package io.devflow.infrastructure.agent.opencode;
 
 import io.smallrye.config.ConfigMapping;
 import io.smallrye.config.WithDefault;
+import io.smallrye.config.WithName;
 
 @ConfigMapping(prefix = "devflow.agent-runtime")
 public interface OpenCodeRuntimeConfig {
 
     String baseUrl();
 
-    @WithDefault("20")
-    int maxRunDurationMinutes();
+    @WithName("hard-timeout-minutes")
+    @WithDefault("15")
+    int hardTimeoutMinutes();
+
+    @WithName("stale-timeout-buffer-minutes")
+    @WithDefault("5")
+    int staleTimeoutBufferMinutes();
 }

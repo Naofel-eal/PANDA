@@ -16,6 +16,7 @@ And it doesn't stop there:
 
 - **🔁 It handles review feedback.** Post an inline comment on the PR, and DevFlow picks it up, spins up a new agent run to address your remarks, and pushes the fix to the same branch.
 - **✅ It tracks merges.** Once all PRs are merged, the Jira ticket moves to "To Validate" automatically. No manual status updates.
+- **💬 It can resume from validation feedback.** Add a comment on a ticket in "To Validate", and DevFlow starts a new run to address it.
 
 The whole system is **stateless** — no database, no in-memory store. DevFlow re-discovers everything from Jira and GitHub on every poll cycle. If it restarts, it picks up right where it left off.
 
@@ -58,6 +59,8 @@ DevFlow uses OpenCode as its agent runtime. Configure the LLM provider with one 
 
 | Variable | Description |
 |----------|-------------|
+| `AGENT_MAX_RUN_DURATION_MINUTES` | Hard timeout for a single agent run before the runtime kills it |
+| `AGENT_STALE_TIMEOUT_BUFFER_MINUTES` | Extra minutes before the orchestrator cancels a stale run as backup |
 | `OPENCODE_MODEL` | Primary model (e.g. `github-copilot/claude-sonnet-4.6`) |
 | `OPENCODE_SMALL_MODEL` | Lightweight model for cheap tasks |
 | `COPILOT_GITHUB_TOKEN` | GitHub Copilot token (if using `github-copilot/*` models) |
@@ -112,7 +115,7 @@ Even though the agent has shell access inside its container, several guardrails 
 - **Path traversal protection** — tool calls validate all paths against an allowed root directory.
 - **Branch name enforcement** — all branches must start with `devflow/`, preventing writes to protected branches.
 - **Run ID matching** — every agent callback is validated against the active run ID, preventing event spoofing.
-- **15-minute hard timeout** — the agent process is killed after 15 minutes (SIGTERM, then SIGKILL after 5s). The orchestrator has a backup stale-run detector in case the timeout fails.
+- **Configurable hard timeout** — the agent process is killed after `AGENT_MAX_RUN_DURATION_MINUTES` (default `15`, SIGTERM then SIGKILL after 5s). The orchestrator has a backup stale-run detector delayed by `AGENT_STALE_TIMEOUT_BUFFER_MINUTES` (default `5`).
 - **Behavioral rules** — the agent is instructed never to start applications, never to kill its own runner, and to only run compilation, lint, and test commands.
 
 ### ✅ Request validation

@@ -10,6 +10,7 @@ End-to-end workflow for the DevFlow orchestrator.
 4. After implementation, the orchestrator commits, pushes, and creates PRs. The ticket moves to "To Review".
 5. Review comments on PRs trigger new agent runs to address feedback.
 6. Once all PRs are merged, the ticket moves to "To Validate".
+7. A new Jira comment on a ticket in "To Validate" triggers a fresh implementation run.
 
 ## Diagram
 
@@ -21,7 +22,7 @@ flowchart TD
 
     subgraph polling["Polling"]
         busy{Agent busy?}
-        jiraPoll{Jira: To Do or Blocked ticket?}
+        jiraPoll{Jira: To Do, Blocked, or To Validate ticket?}
         githubPoll{GitHub: review comment or merged PR?}
     end
 
@@ -55,12 +56,17 @@ flowchart TD
         newComment{New user comment?}
     end
 
+    subgraph validation["To Validate"]
+        validationComment{New user comment?}
+    end
+
     start --> busy
     busy -- yes --> ignored
     busy -- no --> jiraPoll
 
     jiraPoll -- To Do --> eligible
     jiraPoll -- Blocked --> newComment
+    jiraPoll -- To Validate --> validationComment
     jiraPoll -- nothing --> githubPoll
 
     eligible -- no --> alreadySkipped
@@ -79,6 +85,9 @@ flowchart TD
 
     newComment -- yes --> implement
     newComment -- no --> ignored
+
+    validationComment -- yes --> implement
+    validationComment -- no --> ignored
 
     githubPoll -- review --> reviewComment
     githubPoll -- merged --> merged
@@ -103,6 +112,7 @@ flowchart TD
 | Blocked | In Progress | New user comment triggers a new agent run |
 | To Review | In Progress | Review comment triggers a fix run |
 | To Review | To Validate | All PRs merged |
+| To Validate | In Progress | New ticket comment triggers a new implementation run |
 
 ## Phase chaining
 

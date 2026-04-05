@@ -164,7 +164,8 @@ public class GitHubPollingJob {
     // ---- Stale run detection ----
 
     private void cancelStaleRunIfNeeded() {
-        Duration maxDuration = Duration.ofMinutes(agentRuntimeConfig.maxRunDurationMinutes());
+        long maxDurationMinutes = effectiveStaleRunDurationMinutes();
+        Duration maxDuration = Duration.ofMinutes(maxDurationMinutes);
         if (!runtime.isStale(maxDuration)) {
             return;
         }
@@ -174,7 +175,7 @@ public class GitHubPollingJob {
         }
         LOG.warnf(
             "Run %s for ticket %s has been active for more than %d minutes — cancelling",
-            stale.agentRunId(), stale.ticketKey(), agentRuntimeConfig.maxRunDurationMinutes()
+            stale.agentRunId(), stale.ticketKey(), maxDurationMinutes
         );
         try {
             agentRuntimePort.cancelRun(new CancelAgentRunCommand(stale.agentRunId()));
@@ -618,5 +619,9 @@ public class GitHubPollingJob {
 
     private boolean isBlank(String value) {
         return value == null || value.isBlank();
+    }
+
+    private long effectiveStaleRunDurationMinutes() {
+        return (long) agentRuntimeConfig.hardTimeoutMinutes() + agentRuntimeConfig.staleTimeoutBufferMinutes();
     }
 }

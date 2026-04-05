@@ -279,7 +279,7 @@ async function handleProcessExit(run, code, signal) {
     const summary = run.cancelRequested
       ? `Run ${run.agentRunId} was cancelled by the orchestrator.`
       : run.timedOut
-        ? `Run ${run.agentRunId} was terminated after exceeding maximum duration (${HTTP.maxRunDurationMs}ms).`
+        ? `Run ${run.agentRunId} was terminated after exceeding maximum duration (${HTTP.maxRunDurationMinutes} minute(s)).`
         : code === 0
           ? `Run ${run.agentRunId}: OpenCode exited normally but never called a terminal Devflow tool (devflow_complete_run, devflow_request_input, or devflow_fail_run). The agent may have failed to load tools or exhausted its step limit.`
           : `OpenCode exited with code ${code ?? "unknown"}${signal ? ` and signal ${signal}` : ""} without sending a terminal Devflow event.`
@@ -385,7 +385,7 @@ async function startRun(command, response) {
       if (activeRun?.agentRunId === run.agentRunId) {
         run.timedOut = true
         console.log(
-          `[agent-runtime] Run ${run.agentRunId} exceeded max duration (${HTTP.maxRunDurationMs}ms), sending ${ProcessSignal.SIGTERM}`
+          `[agent-runtime] Run ${run.agentRunId} exceeded max duration (${HTTP.maxRunDurationMinutes} minute(s)), sending ${ProcessSignal.SIGTERM}`
         )
         run.child.kill(ProcessSignal.SIGTERM)
         setTimeout(() => {

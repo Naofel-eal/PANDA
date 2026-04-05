@@ -1,9 +1,22 @@
+function positiveIntegerFromEnv(name, fallback) {
+  const rawValue = process.env[name]
+  if (!rawValue) {
+    return fallback
+  }
+
+  const parsed = Number.parseInt(rawValue, 10)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback
+}
+
 export const HTTP = Object.freeze({
   defaultPort: 8081,
   eventTimeoutMs: 10_000,
   cancelKillDelayMs: 5_000,
   logTailMaxChars: 16_000,
-  maxRunDurationMs: 15 * 60 * 1_000
+  maxRunDurationMinutes: positiveIntegerFromEnv("AGENT_MAX_RUN_DURATION_MINUTES", 15),
+  get maxRunDurationMs() {
+    return this.maxRunDurationMinutes * 60 * 1_000
+  }
 })
 
 export const AgentCommandType = Object.freeze({

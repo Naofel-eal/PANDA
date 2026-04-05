@@ -36,6 +36,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.function.Predicate;
 import org.jboss.logging.Logger;
 
 /**
@@ -46,7 +47,8 @@ import org.jboss.logging.Logger;
  * <ol>
  *   <li>If busy → skip entirely</li>
  *   <li>Search epic for "To Do" tickets → pick first eligible → start info-collection agent run</li>
- *   <li>If not busy after step 2, search epic for "Blocked" tickets → check for new user comments → start agent</li>
+ *   <li>If not busy after step 2, search epic for "Blocked" and "To Validate" tickets →
+ *       check for new user comments → start agent</li>
  * </ol>
  */
 @ApplicationScoped
@@ -72,6 +74,7 @@ public class JiraTicketPollingJob {
     private static final String JQL_PARENT_STATUS_TEMPLATE = "parent = \"%s\" AND status = \"%s\"";
     private static final String DEVFLOW_COMMENT_MARKER = "Devflow marked this ticket as blocked";
     private static final String DEVFLOW_NOT_ELIGIBLE_MARKER = "Devflow marked this ticket as blocked because it is missing:";
+    private static final String DEVFLOW_READY_FOR_VALIDATION_MARKER = "Pull request merged and ready for validation.";
     private static final long ELIGIBILITY_REASSESSMENT_GRACE_SECONDS = 60;
 
     private final HttpClient client = HttpClient.newBuilder()
@@ -133,12 +136,16 @@ public class JiraTicketPollingJob {
         if (!runtime.isBusy()) {
             pollBlockedTickets();
         }
+        if (!runtime.isBusy()) {
+            pollValidationTickets();
+        }
     }
 
     // ---- Stale run detection ----
 
     private void cancelStaleRunIfNeeded() {
-        Duration maxDuration = Duration.ofMinutes(agentRuntimeConfig.maxRunDurationMinutes());
+        long maxDurationMinutes = effectiveStaleRunDurationMinutes();
+        Duration maxDuration = Duration.ofMinutes(maxDurationMinutes);
         if (!runtime.isStale(maxDuration)) {
             return;
         }
@@ -148,7 +155,7 @@ public class JiraTicketPollingJob {
         }
         LOG.warnf(
             "Run %s for ticket %s has been active for more than %d minutes — cancelling",
-            stale.agentRunId(), stale.ticketKey(), agentRuntimeConfig.maxRunDurationMinutes()
+            stale.agentRunId(), stale.ticketKey(), maxDurationMinutes
         );
         try {
             agentRuntimePort.cancelRun(new CancelAgentRunCommand(stale.agentRunId()));
@@ -227,22 +234,30 @@ public class JiraTicketPollingJob {
     // ---- "Blocked" ticket handling ----
 
     private void pollBlockedTickets() {
+        pollTicketsWaitingForComment(config.blockedStatus(), WorkflowPhase.INFORMATION_COLLECTION);
+    }
+
+    private void pollValidationTickets() {
+        pollTicketsWaitingForComment(config.validateStatus(), WorkflowPhase.IMPLEMENTATION);
+    }
+
+    private void pollTicketsWaitingForComment(String status, WorkflowPhase phase) {
         String nextPageToken = null;
         boolean lastPage = false;
 
         while (!lastPage && !runtime.isBusy()) {
-            Map<String, Object> payload = fetchIssuesPage(config.blockedStatus(), nextPageToken);
+            Map<String, Object> payload = fetchIssuesPage(status, nextPageToken);
             List<Map<String, Object>> issues = jiraPayloadMapper.extractIssues(payload);
             if (issues.isEmpty()) {
                 break;
             }
-            LOG.infof("Fetched %d Jira 'Blocked' tickets from epic %s", issues.size(), config.epicKey());
+            LOG.infof("Fetched %d Jira '%s' tickets from epic %s", issues.size(), status, config.epicKey());
 
             for (Map<String, Object> issue : issues) {
                 if (runtime.isBusy()) {
                     return;
                 }
-                if (tryResumeBlockedTicket(issue)) {
+                if (tryResumeTicket(issue, phase, status)) {
                     return;
                 }
             }
@@ -254,38 +269,18 @@ public class JiraTicketPollingJob {
         }
     }
 
-    private boolean tryResumeBlockedTicket(Map<String, Object> issue) {
+    private boolean tryResumeTicket(Map<String, Object> issue, WorkflowPhase phase, String status) {
         WorkItem workItem = jiraPayloadMapper.toWorkItem(issue);
         List<IncomingComment> comments = safeLoadComments(workItem.key());
-        if (comments.isEmpty()) {
-            return false;
-        }
-
-        Optional<IncomingComment> latestDevflowComment = comments.stream()
-            .filter(this::isDevflowComment)
-            .max(Comparator.comparing(this::commentTimestamp));
-
-        Optional<IncomingComment> latestUserComment = comments.stream()
-            .filter(this::isUserComment)
-            .max(Comparator.comparing(this::commentTimestamp));
-
-        if (latestUserComment.isEmpty()) {
-            return false;
-        }
-
-        boolean hasNewUserComment = latestDevflowComment
-            .map(devflowComment -> commentTimestamp(latestUserComment.get()).isAfter(commentTimestamp(devflowComment)))
-            .orElse(true);
-
-        if (!hasNewUserComment) {
+        if (!hasNewUserCommentSinceLastDevflowComment(comments, this::isDevflowComment)) {
             return false;
         }
 
         LOG.infof(
-            "Resuming blocked ticket %s — new user comment detected after last DevFlow comment",
-            workItem.key()
+            "Resuming Jira ticket %s from status '%s' — new user comment detected after last DevFlow comment",
+            workItem.key(), status
         );
-        startAgentRun(workItem, comments, WorkflowPhase.INFORMATION_COLLECTION);
+        startAgentRun(workItem, comments, phase);
         return true;
     }
 
@@ -376,15 +371,44 @@ public class JiraTicketPollingJob {
         if (devflowAccountId != null) {
             return devflowAccountId.equals(comment.authorId());
         }
-        return comment.body() != null && comment.body().contains(DEVFLOW_COMMENT_MARKER);
+        return comment.body() != null && (
+            comment.body().contains(DEVFLOW_COMMENT_MARKER)
+                || comment.body().contains(DEVFLOW_NOT_ELIGIBLE_MARKER)
+                || comment.body().contains(DEVFLOW_READY_FOR_VALIDATION_MARKER)
+        );
     }
 
     private boolean isUserComment(IncomingComment comment) {
         return comment != null && comment.body() != null && !isDevflowComment(comment);
     }
 
-    private Instant commentTimestamp(IncomingComment comment) {
+    private static Instant commentTimestamp(IncomingComment comment) {
         return comment.updatedAt() != null ? comment.updatedAt() : comment.createdAt();
+    }
+
+    static boolean hasNewUserCommentSinceLastDevflowComment(
+        List<IncomingComment> comments,
+        Predicate<IncomingComment> isDevflowComment
+    ) {
+        if (comments == null || comments.isEmpty()) {
+            return false;
+        }
+
+        Optional<IncomingComment> latestDevflowComment = comments.stream()
+            .filter(isDevflowComment)
+            .max(Comparator.comparing(JiraTicketPollingJob::commentTimestamp));
+
+        Optional<IncomingComment> latestUserComment = comments.stream()
+            .filter(comment -> comment != null && comment.body() != null && !isDevflowComment.test(comment))
+            .max(Comparator.comparing(JiraTicketPollingJob::commentTimestamp));
+
+        if (latestUserComment.isEmpty()) {
+            return false;
+        }
+
+        return latestDevflowComment
+            .map(devflowComment -> commentTimestamp(latestUserComment.get()).isAfter(commentTimestamp(devflowComment)))
+            .orElse(true);
     }
 
     /**
@@ -401,7 +425,7 @@ public class JiraTicketPollingJob {
     private boolean shouldSkipIneligibleTicket(Map<String, Object> issue, List<IncomingComment> comments) {
         Optional<IncomingComment> lastEligibilityComment = comments.stream()
             .filter(this::isDevflowEligibilityComment)
-            .max(Comparator.comparing(this::commentTimestamp));
+            .max(Comparator.comparing(JiraTicketPollingJob::commentTimestamp));
 
         if (lastEligibilityComment.isEmpty()) {
             return false;
@@ -411,7 +435,7 @@ public class JiraTicketPollingJob {
 
         boolean hasNewerUserComment = comments.stream()
             .filter(this::isUserComment)
-            .map(this::commentTimestamp)
+            .map(JiraTicketPollingJob::commentTimestamp)
             .anyMatch(timestamp -> timestamp.isAfter(eligibilityTimestamp));
 
         if (hasNewerUserComment) {
@@ -431,6 +455,10 @@ public class JiraTicketPollingJob {
         return isDevflowComment(comment)
             && comment.body() != null
             && comment.body().contains(DEVFLOW_NOT_ELIGIBLE_MARKER);
+    }
+
+    private long effectiveStaleRunDurationMinutes() {
+        return (long) agentRuntimeConfig.hardTimeoutMinutes() + agentRuntimeConfig.staleTimeoutBufferMinutes();
     }
 
     // ---- Jira API helpers ----
