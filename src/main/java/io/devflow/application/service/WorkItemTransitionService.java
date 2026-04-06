@@ -15,9 +15,6 @@ public class WorkItemTransitionService {
     @Inject
     TicketingPort ticketingPort;
 
-    /**
-     * Transition a ticket directly using system/key strings (stateless mode).
-     */
     public void transitionDirect(String workItemSystem, String workItemKey, WorkItemTransitionTarget target, String reasonCode) {
         LOG.infof(
             "Requesting ticket transition for %s:%s to %s (%s)",

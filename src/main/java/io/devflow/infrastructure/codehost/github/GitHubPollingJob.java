@@ -43,12 +43,6 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.jboss.logging.Logger;
 
-/**
- * Stateless GitHub poller. Discovers open PRs on devflow/* branches via the GitHub API,
- * checks for review comments, and starts an agent run to address them.
- *
- * <p>No ExternalReferenceStore — PRs are discovered fresh every poll cycle from the GitHub API.
- */
 @ApplicationScoped
 public class GitHubPollingJob {
 
@@ -83,10 +77,6 @@ public class GitHubPollingJob {
     private static final String PAYLOAD_COMMITTER = "committer";
     private static final String PAYLOAD_DATE = "date";
 
-    /**
-     * Extracts the ticket key from a devflow branch name.
-     * Examples: devflow/PROJ-123/repo-name → PROJ-123, devflow/proj-42/foo → PROJ-42
-     */
     private static final Pattern TICKET_KEY_PATTERN = Pattern.compile(
         "^devflow/([A-Za-z]+-\\d+)(?:/.*)?$"
     );
@@ -125,8 +115,6 @@ public class GitHubPollingJob {
     @Inject
     JiraConfig jiraConfig;
 
-    // ---- Scheduled entry point ----
-
     @Scheduled(
         every = "${devflow.github.poll-interval-minutes:1}m",
         concurrentExecution = Scheduled.ConcurrentExecution.SKIP
@@ -141,12 +129,10 @@ public class GitHubPollingJob {
             return;
         }
 
-        // Phase 1: Check for merged PRs (no agent needed, always runs)
         for (String repository : repositories) {
             processMergedPullRequests(repository);
         }
 
-        // Phase 2: Check for review comments (needs agent)
         cancelStaleRunIfNeeded();
         if (runtime.isBusy()) {
             LOG.info("Skipping GitHub review comment polling because an agent run is active");
@@ -160,8 +146,6 @@ public class GitHubPollingJob {
             pollRepositoryPullRequests(repository);
         }
     }
-
-    // ---- Stale run detection ----
 
     private void cancelStaleRunIfNeeded() {
         long maxDurationMinutes = effectiveStaleRunDurationMinutes();
@@ -184,8 +168,6 @@ public class GitHubPollingJob {
         }
         runtime.clearRunIfMatches(stale.agentRunId());
     }
-
-    // ---- Per-repository PR scanning ----
 
     private void pollRepositoryPullRequests(String repository) {
         List<Map<String, Object>> pullRequests = fetchOpenPullRequests(repository);
@@ -223,7 +205,6 @@ public class GitHubPollingJob {
             return;
         }
 
-        // Find the most recent non-bot review comment
         Map<String, Object> latestComment = reviewComments.stream()
             .filter(this::isHumanComment)
             .max(Comparator.comparing(comment -> extractInstant(comment.get(PAYLOAD_UPDATED_AT))))
@@ -233,8 +214,6 @@ public class GitHubPollingJob {
             return;
         }
 
-        // Dedup: skip if the comment was posted before the last commit on the branch.
-        // This means DevFlow already handled it by pushing a new commit in response.
         Instant commentDate = extractInstant(latestComment.get(PAYLOAD_CREATED_AT));
         Instant lastCommitDate = fetchLastCommitDate(repository, headBranch);
         if (commentDate != null && lastCommitDate != null && !commentDate.isAfter(lastCommitDate)) {
@@ -262,8 +241,6 @@ public class GitHubPollingJob {
         startAgentRunForReviewComment(ticketKey, codeChange, comment, repository);
     }
 
-    // ---- Merged PR processing ----
-
     private void processMergedPullRequests(String repository) {
         List<Map<String, Object>> closedPRs = fetchRecentlyClosedPullRequests(repository);
         for (Map<String, Object> pr : closedPRs) {
@@ -283,7 +260,6 @@ public class GitHubPollingJob {
         if (workItem == null) {
             return;
         }
-        // Only transition if ticket is still in "To Review" — makes this idempotent
         if (!jiraConfig.reviewStatus().equalsIgnoreCase(workItem.status())) {
             return;
         }
@@ -324,8 +300,6 @@ public class GitHubPollingJob {
         }
         return comment.toString();
     }
-
-    // ---- Agent run dispatch ----
 
     private void startAgentRunForReviewComment(
         String ticketKey,
@@ -381,7 +355,6 @@ public class GitHubPollingJob {
         snapshot.put("codeChange", codeChange);
         snapshot.put("reviewComment", reviewComment);
 
-        // Try to load ticket details from Jira for additional context
         WorkItem workItem = safeLoadWorkItem(ticketKey);
         if (workItem != null) {
             snapshot.put("workItem", workItem);
@@ -425,8 +398,6 @@ public class GitHubPollingJob {
         return entry;
     }
 
-    // ---- PR/comment helpers ----
-
     private boolean isDevflowBranch(Map<String, Object> pullRequest) {
         String headBranch = extractHeadBranch(pullRequest);
         return headBranch != null && headBranch.startsWith(GitHubCodeHostAdapter.BRANCH_PREFIX);
@@ -454,7 +425,6 @@ public class GitHubPollingJob {
     private boolean isHumanComment(Map<String, Object> comment) {
         Map<String, Object> user = map(comment.get(PAYLOAD_USER));
         String login = string(user.get(PAYLOAD_LOGIN));
-        // Filter out bot comments (GitHub Actions, apps, etc.)
         return login != null && !login.endsWith("[bot]");
     }
 
@@ -471,8 +441,6 @@ public class GitHubPollingJob {
         );
     }
 
-    // ---- Jira fallback for ticket context ----
-
     private WorkItem safeLoadWorkItem(String ticketKey) {
         try {
             return ticketingPort.loadWorkItem(JiraSystem.ID, ticketKey).orElse(null);
@@ -481,8 +449,6 @@ public class GitHubPollingJob {
             return null;
         }
     }
-
-    // ---- GitHub API calls ----
 
     private List<Map<String, Object>> fetchOpenPullRequests(String repository) {
         HttpRequest request = HttpRequest.newBuilder()
@@ -593,8 +559,6 @@ public class GitHubPollingJob {
             throw new IllegalStateException("Interrupted while fetching last commit date", exception);
         }
     }
-
-    // ---- Utility ----
 
     private Instant extractInstant(Object value) {
         if (value == null) {

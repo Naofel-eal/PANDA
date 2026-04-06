@@ -7,15 +7,6 @@ import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-/**
- * Converts a subset of Markdown into Atlassian Document Format (ADF).
- *
- * <p>Supported block elements: headings, bullet lists, ordered lists, code blocks,
- * horizontal rules, and paragraphs.</p>
- *
- * <p>Supported inline elements: bold ({@code **text**}), inline code ({@code `text`}),
- * bold+code ({@code **`text`**}), and auto-linked URLs.</p>
- */
 final class MarkdownToAdfConverter {
 
   private static final Pattern HEADING_PATTERN = Pattern.compile("^(#{1,6})\\s+(.+)$");
@@ -24,15 +15,6 @@ final class MarkdownToAdfConverter {
   private static final Pattern RULE_PATTERN = Pattern.compile("^(---+|\\*\\*\\*+|___+)$");
   private static final Pattern CODE_FENCE_PATTERN = Pattern.compile("^```(.*)$");
 
-  /**
-   * Inline pattern with priority ordering:
-   * <ol>
-   *   <li>{@code **`text`**} — bold + code (group 1)</li>
-   *   <li>{@code **text**} — bold only (group 2)</li>
-   *   <li>{@code `text`} — inline code (group 3)</li>
-   *   <li>{@code https://...} — URL auto-link (group 4)</li>
-   * </ol>
-   */
   private static final Pattern INLINE_PATTERN = Pattern.compile(
       "\\*\\*`([^`]+)`\\*\\*"
           + "|\\*\\*(.+?)\\*\\*"
@@ -43,10 +25,6 @@ final class MarkdownToAdfConverter {
   private MarkdownToAdfConverter() {
   }
 
-  /**
-   * Converts a Markdown string to a list of ADF block nodes (the {@code content}
-   * array of the top-level {@code doc} node).
-   */
   static List<Map<String, Object>> convert(String markdown) {
     if (markdown == null || markdown.isBlank()) {
       return List.of(paragraph(List.of()));
@@ -64,7 +42,6 @@ final class MarkdownToAdfConverter {
         continue;
       }
 
-      // --- Code block (``` ... ```) ---
       Matcher codeFence = CODE_FENCE_PATTERN.matcher(line);
       if (codeFence.matches()) {
         String language = codeFence.group(1).trim();
@@ -78,13 +55,12 @@ final class MarkdownToAdfConverter {
           i++;
         }
         if (i < lines.length) {
-          i++; // skip closing fence
+          i++;
         }
         blocks.add(codeBlock(code.toString(), language));
         continue;
       }
 
-      // --- Heading (# ... ######) ---
       Matcher heading = HEADING_PATTERN.matcher(line);
       if (heading.matches()) {
         int level = heading.group(1).length();
@@ -93,14 +69,12 @@ final class MarkdownToAdfConverter {
         continue;
       }
 
-      // --- Horizontal rule (---, ***, ___) ---
       if (RULE_PATTERN.matcher(line).matches()) {
         blocks.add(Map.of("type", "rule"));
         i++;
         continue;
       }
 
-      // --- Bullet list (- item / * item) ---
       Matcher bullet = BULLET_PATTERN.matcher(line);
       if (bullet.matches()) {
         List<Map<String, Object>> items = new ArrayList<>();
@@ -116,7 +90,6 @@ final class MarkdownToAdfConverter {
         continue;
       }
 
-      // --- Ordered list (1. item) ---
       Matcher ordered = ORDERED_PATTERN.matcher(line);
       if (ordered.matches()) {
         List<Map<String, Object>> items = new ArrayList<>();
@@ -132,7 +105,6 @@ final class MarkdownToAdfConverter {
         continue;
       }
 
-      // --- Regular paragraph ---
       blocks.add(paragraph(parseInline(line)));
       i++;
     }
@@ -142,8 +114,6 @@ final class MarkdownToAdfConverter {
     }
     return blocks;
   }
-
-  // ---- Block node builders ----
 
   private static Map<String, Object> heading(int level, String text) {
     Map<String, Object> node = new LinkedHashMap<>();
@@ -191,12 +161,6 @@ final class MarkdownToAdfConverter {
     return node;
   }
 
-  // ---- Inline parser ----
-
-  /**
-   * Parses inline Markdown within a single line of text and returns
-   * a list of ADF text nodes with appropriate marks.
-   */
   static List<Map<String, Object>> parseInline(String text) {
     if (text == null || text.isEmpty()) {
       return List.of();

@@ -219,31 +219,19 @@ function logStdoutLine(run, line) {
   try {
     const entry = JSON.parse(trimmed)
     if (entry.type === "text") {
-      const content = entry.content ?? entry.text ?? ""
-      const display = typeof content === "string" ? content : JSON.stringify(content)
-      if (display) {
-        console.log(`[agent] ${run.agentRunId}: ${display}`)
-      }
       return
     }
     if (entry.type === "tool_use") {
-      const toolName = entry.name ?? entry.tool ?? "unknown"
-      console.log(`[agent] ${run.agentRunId}: [tool] calling ${toolName}`)
       return
     }
     if (entry.type === "tool_result") {
-      const toolName = entry.name ?? entry.tool ?? "unknown"
-      const ok = entry.error ? "error" : "ok"
-      console.log(`[agent] ${run.agentRunId}: [tool] ${toolName} → ${ok}`)
       return
     }
     if (entry.type === "step_finish") {
-      const summary = entry.summary ?? `step finished (tokens: ${entry.tokens ?? "?"})`
-      console.log(`[agent] ${run.agentRunId}: [step] ${summary}`)
       return
     }
   } catch {
-    console.log(`[agent] ${run.agentRunId}: ${trimmed}`)
+    return
   }
 }
 
@@ -253,13 +241,7 @@ function appendLogBuffer(run, field, chunk) {
   if (field === "stderr") {
     const lines = text.split("\n")
     for (const line of lines) {
-      const trimmed = line.trim()
-      if (trimmed && (
-        trimmed.includes("[devflow-tool]")
-        || /\b(error|fatal|panic)\b/i.test(trimmed)
-      )) {
-        console.log(`[agent] ${run.agentRunId}: [stderr] ${trimmed}`)
-      }
+      void line
     }
     return
   }
@@ -270,9 +252,6 @@ function appendLogBuffer(run, field, chunk) {
 }
 
 async function handleProcessExit(run, code, signal) {
-  console.log(
-    `[agent-runtime] Process exit for run ${run.agentRunId} (workflow ${run.workflowId}) with code=${code ?? "null"} signal=${signal ?? "null"}`
-  )
   const state = await readStateFile(run.stateFile)
   if (!state.terminalEventSent) {
     const type = run.cancelRequested ? AgentEventType.CANCELLED : AgentEventType.FAILED
@@ -284,16 +263,11 @@ async function handleProcessExit(run, code, signal) {
           ? `Run ${run.agentRunId}: OpenCode exited normally but never called a terminal Devflow tool (devflow_complete_run, devflow_request_input, or devflow_fail_run). The agent may have failed to load tools or exhausted its step limit.`
           : `OpenCode exited with code ${code ?? "unknown"}${signal ? ` and signal ${signal}` : ""} without sending a terminal Devflow event.`
 
-    // Diagnostic dump: print captured stderr/stdout tail so we can understand what went wrong
     if (run.stderr.trim()) {
-      console.log(`[agent-runtime] === stderr tail for run ${run.agentRunId} ===`)
-      console.log(run.stderr.slice(-4000))
-      console.log(`[agent-runtime] === end stderr tail ===`)
+      void run.stderr
     }
     if (run.stdout.trim()) {
-      console.log(`[agent-runtime] === stdout tail for run ${run.agentRunId} ===`)
-      console.log(run.stdout.slice(-4000))
-      console.log(`[agent-runtime] === end stdout tail ===`)
+      void run.stdout
     }
 
     await postEvent({
@@ -311,12 +285,10 @@ async function handleProcessExit(run, code, signal) {
       }
     })
     await markTerminalState(run.stateFile, type)
-    console.log(`[agent-runtime] Sent fallback terminal event ${type} for run ${run.agentRunId}`)
   }
 
   if (activeRun?.agentRunId === run.agentRunId) {
     activeRun = null
-    console.log(`[agent-runtime] Cleared active run ${run.agentRunId}`)
   }
 }
 
@@ -338,9 +310,6 @@ async function startRun(command, response) {
   const stateFile = await createStateFile(command)
   const executionConfig = resolveExecutionConfig(command)
   const childEnv = await prepareOpenCodeEnvironment(projectDir, executionConfig)
-  console.log(
-    `[agent-runtime] Starting run ${command.agentRunId} for workflow ${command.workflowId} in phase ${command.phase} from ${projectDir}`
-  )
 
   const child = spawn(RuntimeConfig.openCodeBinary, buildArgs(command, executionConfig), {
     cwd: projectDir,
@@ -379,18 +348,13 @@ async function startRun(command, response) {
   try {
     await started
     activeRun = run
-    console.log(`[agent-runtime] Spawned OpenCode process for run ${command.agentRunId}`)
 
     run.maxRunTimer = setTimeout(() => {
       if (activeRun?.agentRunId === run.agentRunId) {
         run.timedOut = true
-        console.log(
-          `[agent-runtime] Run ${run.agentRunId} exceeded max duration (${HTTP.maxRunDurationMinutes} minute(s)), sending ${ProcessSignal.SIGTERM}`
-        )
         run.child.kill(ProcessSignal.SIGTERM)
         setTimeout(() => {
           if (activeRun?.agentRunId === run.agentRunId) {
-            console.log(`[agent-runtime] Forcing kill for timed-out run ${run.agentRunId}`)
             run.child.kill(ProcessSignal.SIGKILL)
           }
         }, HTTP.cancelKillDelayMs).unref()
@@ -415,7 +379,6 @@ async function startRun(command, response) {
       providerRunRef: `${ProviderRunRef.prefix}${command.agentRunId}`,
       summary: `OpenCode run started for phase ${command.phase}.`
     })
-    console.log(`[agent-runtime] Sent RUN_STARTED for run ${command.agentRunId}`)
 
     json(response, 202, {
       status: "accepted",
@@ -441,11 +404,9 @@ async function cancelRun(agentRunId, response) {
   }
 
   activeRun.cancelRequested = true
-  console.log(`[agent-runtime] Cancelling run ${agentRunId} with ${ProcessSignal.SIGTERM}`)
   activeRun.child.kill(ProcessSignal.SIGTERM)
   setTimeout(() => {
     if (activeRun?.agentRunId === agentRunId) {
-      console.log(`[agent-runtime] Forcing kill for run ${agentRunId} with ${ProcessSignal.SIGKILL}`)
       activeRun.child.kill(ProcessSignal.SIGKILL)
     }
   }, HTTP.cancelKillDelayMs).unref()
@@ -490,6 +451,4 @@ const server = http.createServer(async (request, response) => {
   }
 })
 
-server.listen(config.port, Host.bindAll, () => {
-  console.log(`Devflow agent runtime listening on ${Host.bindAll}:${config.port}`)
-})
+server.listen(config.port, Host.bindAll)

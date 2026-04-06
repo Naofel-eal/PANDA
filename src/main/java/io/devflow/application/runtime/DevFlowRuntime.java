@@ -21,9 +21,6 @@ public class DevFlowRuntime {
         return currentRun != null;
     }
 
-    /**
-     * Returns {@code true} when a run is active and has been running longer than {@code maxDuration}.
-     */
     public boolean isStale(Duration maxDuration) {
         RunContext snapshot = currentRun;
         return snapshot != null

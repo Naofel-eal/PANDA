@@ -39,18 +39,6 @@ import java.util.UUID;
 import java.util.function.Predicate;
 import org.jboss.logging.Logger;
 
-/**
- * Stateless Jira ticket poller. Uses DevFlowRuntime (volatile currentRun) instead of
- * WorkflowStore/AgentRunStore. Dispatches agent runs directly (no outbox, no signal service).
- *
- * <p>Poll cycle:
- * <ol>
- *   <li>If busy → skip entirely</li>
- *   <li>Search epic for "To Do" tickets → pick first eligible → start info-collection agent run</li>
- *   <li>If not busy after step 2, search epic for "Blocked" and "To Validate" tickets →
- *       check for new user comments → start agent</li>
- * </ol>
- */
 @ApplicationScoped
 public class JiraTicketPollingJob {
 
@@ -113,8 +101,6 @@ public class JiraTicketPollingJob {
     @Inject
     ObjectMapper objectMapper;
 
-    // ---- Scheduled entry point ----
-
     @Scheduled(
         every = "${devflow.jira.poll-interval-minutes:1}m",
         concurrentExecution = Scheduled.ConcurrentExecution.SKIP
@@ -141,8 +127,6 @@ public class JiraTicketPollingJob {
         }
     }
 
-    // ---- Stale run detection ----
-
     private void cancelStaleRunIfNeeded() {
         long maxDurationMinutes = effectiveStaleRunDurationMinutes();
         Duration maxDuration = Duration.ofMinutes(maxDurationMinutes);
@@ -164,8 +148,6 @@ public class JiraTicketPollingJob {
         }
         runtime.clearRunIfMatches(stale.agentRunId());
     }
-
-    // ---- "To Do" ticket handling ----
 
     private void pollTodoTickets() {
         String nextPageToken = null;
@@ -231,8 +213,6 @@ public class JiraTicketPollingJob {
         return true;
     }
 
-    // ---- "Blocked" ticket handling ----
-
     private void pollBlockedTickets() {
         pollTicketsWaitingForComment(config.blockedStatus(), WorkflowPhase.INFORMATION_COLLECTION);
     }
@@ -283,8 +263,6 @@ public class JiraTicketPollingJob {
         startAgentRun(workItem, comments, phase);
         return true;
     }
-
-    // ---- Agent run dispatch (direct, no outbox) ----
 
     private void startAgentRun(WorkItem workItem, List<IncomingComment> comments, WorkflowPhase phase) {
         UUID workflowId = UUID.randomUUID();
@@ -362,8 +340,6 @@ public class JiraTicketPollingJob {
         return entry;
     }
 
-    // ---- Comment detection helpers ----
-
     private boolean isDevflowComment(IncomingComment comment) {
         if (comment == null) {
             return false;
@@ -411,17 +387,6 @@ public class JiraTicketPollingJob {
             .orElse(true);
     }
 
-    /**
-     * Determines whether an ineligible ticket should be silently skipped because DevFlow already
-     * posted an eligibility comment and no new information has been added since then.
-     *
-     * <p>Re-evaluation is triggered when:
-     * <ul>
-     *   <li>A non-DevFlow user posted a comment after the last eligibility assessment</li>
-     *   <li>The issue was updated (description, fields) after the assessment (with a grace period
-     *       to ignore the update caused by the assessment comment itself)</li>
-     * </ul>
-     */
     private boolean shouldSkipIneligibleTicket(Map<String, Object> issue, List<IncomingComment> comments) {
         Optional<IncomingComment> lastEligibilityComment = comments.stream()
             .filter(this::isDevflowEligibilityComment)
@@ -460,8 +425,6 @@ public class JiraTicketPollingJob {
     private long effectiveStaleRunDurationMinutes() {
         return (long) agentRuntimeConfig.hardTimeoutMinutes() + agentRuntimeConfig.staleTimeoutBufferMinutes();
     }
-
-    // ---- Jira API helpers ----
 
     private void resolveDevflowAccountId() {
         if (devflowAccountId != null) {

@@ -34,10 +34,6 @@ import java.util.concurrent.CompletableFuture;
 import java.util.stream.Collectors;
 import org.jboss.logging.Logger;
 
-/**
- * Stateless agent event handler. Uses DevFlowRuntime (volatile currentRun) instead of persistence.
- * Dispatches directly to the agent runtime (no outbox pattern).
- */
 @ApplicationScoped
 public class AgentEventService {
 
@@ -122,7 +118,6 @@ public class AgentEventService {
         } else if (run.phase() == WorkflowPhase.IMPLEMENTATION) {
             publishAndMoveToReview(run, command);
         } else {
-            // TECHNICAL_VALIDATION or BUSINESS_VALIDATION completed
             runtime.clearRun();
         }
     }
@@ -140,15 +135,6 @@ public class AgentEventService {
         runtime.clearRun();
     }
 
-    // ---- Phase chaining ----
-
-    /**
-     * Delay before dispatching the implementation run. The HTTP 200 response to the
-     * current COMPLETED event must reach the agent tool first so the old OpenCode process
-     * can exit. Without this, the agent runtime rejects the new run with HTTP 409
-     * ("another_run_is_active") and the orchestrator thread is blocked waiting for a
-     * process that is itself blocked waiting for our response — a deadlock.
-     */
     private static final int CHAIN_DISPATCH_DELAY_MS = 3_000;
 
     private void chainToImplementation(RunContext run, ReceiveAgentEventCommand command) {
@@ -159,9 +145,6 @@ public class AgentEventService {
         Map<String, Object> snapshot = buildChainSnapshot(newRun, command);
         String objective = "Implement work item " + run.ticketKey();
 
-        // Dispatch asynchronously: return from handle() first so the REST endpoint sends
-        // HTTP 200 to the tool. The old process receives the response, records the event,
-        // and exits. After the delay the agent runtime is free to accept the new run.
         CompletableFuture.runAsync(() -> {
             try {
                 Thread.sleep(CHAIN_DISPATCH_DELAY_MS);
@@ -214,8 +197,6 @@ public class AgentEventService {
         runtime.clearRun();
     }
 
-    // ---- Direct agent dispatch (no outbox) ----
-
     private void dispatchAgentRun(RunContext run, String objective, Map<String, Object> snapshot) {
         workspaceLayoutService.ensureDirectories(run.workflowId());
 
@@ -237,8 +218,6 @@ public class AgentEventService {
         );
         agentRuntimePort.startRun(command);
     }
-
-    // ---- Snapshot building ----
 
     private Map<String, Object> buildChainSnapshot(RunContext run, ReceiveAgentEventCommand command) {
         Map<String, Object> snapshot = new LinkedHashMap<>();
@@ -327,7 +306,6 @@ public class AgentEventService {
             }
         }
 
-        // Use published PRs from current run context
         for (CodeChangeRef pr : run.publishedPRs()) {
             if (pr.repository() != null && pr.sourceBranch() != null
                 && !pr.repository().isBlank() && !pr.sourceBranch().isBlank()) {
@@ -370,8 +348,6 @@ public class AgentEventService {
         return List.of();
     }
 
-    // ---- Jira interaction helpers ----
-
     private void postTicketComment(RunContext run, String comment, String reasonCode) {
         try {
             ticketingPort.comment(new CommentWorkItemCommand(run.ticketSystem(), run.ticketKey(), comment, reasonCode));
@@ -401,8 +377,6 @@ public class AgentEventService {
             return List.of();
         }
     }
-
-    // ---- Normalization helpers (preserved from original) ----
 
     private InputRequiredPayload normalizeInputRequired(ReceiveAgentEventCommand command, WorkflowPhase phase) {
         BlockerType blockerType = Objects.requireNonNullElse(command.blockerType(), BlockerType.MISSING_TICKET_INFORMATION);
