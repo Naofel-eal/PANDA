@@ -1,9 +1,9 @@
 package io.devflow.infrastructure.http.request;
 
-import io.devflow.domain.agent.AgentEventType;
-import io.devflow.domain.workflow.BlockerType;
-import io.devflow.domain.workflow.RequestedFrom;
-import io.devflow.domain.workflow.ResumeTrigger;
+import io.devflow.domain.model.agent.AgentEventType;
+import io.devflow.domain.model.workflow.BlockerType;
+import io.devflow.domain.model.workflow.RequestedFrom;
+import io.devflow.domain.model.workflow.ResumeTrigger;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import java.time.Instant;

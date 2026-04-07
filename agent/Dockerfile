@@ -1,4 +1,4 @@
-FROM node:22-bookworm-slim
+FROM node:22-trixie
 
 ENV HOME=/root
 ENV PATH="/root/.bun/bin:/root/.local/bin:${PATH}"

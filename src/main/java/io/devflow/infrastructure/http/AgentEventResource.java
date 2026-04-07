@@ -1,6 +1,6 @@
 package io.devflow.infrastructure.http;
 
-import io.devflow.application.usecase.AgentEventService;
+import io.devflow.application.agent.event.HandleAgentEventUseCase;
 import io.devflow.infrastructure.http.mapper.AgentEventHttpMapper;
 import io.devflow.infrastructure.http.request.AgentEventHttpRequest;
 import jakarta.inject.Inject;
@@ -18,14 +18,14 @@ import jakarta.ws.rs.core.Response;
 public class AgentEventResource {
 
     @Inject
-    AgentEventService agentEventService;
+    HandleAgentEventUseCase handleAgentEventUseCase;
 
     @Inject
     AgentEventHttpMapper agentEventHttpMapper;
 
     @POST
     public Response receive(@Valid AgentEventHttpRequest request) {
-        boolean processed = agentEventService.handle(agentEventHttpMapper.toCommand(request));
+        boolean processed = handleAgentEventUseCase.execute(agentEventHttpMapper.toDomain(request));
         return processed ? Response.accepted().build() : Response.status(Response.Status.OK).build();
     }
 }

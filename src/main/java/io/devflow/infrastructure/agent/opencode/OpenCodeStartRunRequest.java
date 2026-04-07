@@ -1,8 +1,8 @@
 package io.devflow.infrastructure.agent.opencode;
 
 import io.devflow.application.command.agent.StartAgentRunCommand;
-import io.devflow.domain.agent.AgentCommandType;
-import io.devflow.domain.workflow.WorkflowPhase;
+import io.devflow.domain.model.agent.AgentCommandType;
+import io.devflow.domain.model.workflow.WorkflowPhase;
 import java.util.Map;
 import java.util.UUID;
 

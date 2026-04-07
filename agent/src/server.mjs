@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto"
 import { spawn } from "node:child_process"
-import { copyFile, cp, mkdir, readFile, rm, writeFile } from "node:fs/promises"
+import { copyFile, cp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises"
 import http from "node:http"
 import path from "node:path"
 import {
@@ -131,26 +131,63 @@ async function prepareOpenCodeEnvironment(projectDir, executionConfig) {
   const runtimeId = randomUUID()
   const runtimeRoot = path.join(RuntimeConfig.stateRoot, "opencode-runtime", runtimeId)
   const runtimeHome = path.join(runtimeRoot, "home")
+  const homeConfigDir = path.join(runtimeHome, ".config", "opencode")
+  const homeNodeModulesCache = path.join(RuntimeConfig.stateRoot, "opencode-home-node-modules-cache")
+  const sharedNpmCache = path.join(RuntimeConfig.stateRoot, "npm-cache")
 
-  await mkdir(runtimeHome, { recursive: true })
+  await mkdir(homeConfigDir, { recursive: true })
+  await mkdir(sharedNpmCache, { recursive: true })
+
+  // Restore cached HOME node_modules to skip opencode plugin npm install
+  try {
+    await stat(homeNodeModulesCache)
+    await cp(homeNodeModulesCache, path.join(homeConfigDir, "node_modules"), { recursive: true })
+    console.log("[agent-runtime] Restored cached HOME node_modules — skipping plugin install")
+  } catch {
+    // No cache yet; opencode will install on first run
+  }
+
+  // Share npm cache across runs to avoid re-downloading packages
+  env.NPM_CONFIG_CACHE = sharedNpmCache
   env.HOME = runtimeHome
   applyExecutionConfig(env, executionConfig)
   await materializeWorkspaceProject(projectDir, executionConfig)
-  return env
+  return { env, homeConfigDir }
 }
 
 async function materializeWorkspaceProject(projectDir, executionConfig) {
   const workspaceConfigDir = path.join(projectDir, ".opencode")
   const workspaceConfigFile = path.join(projectDir, "opencode.json")
   const workspaceAgentsFile = path.join(projectDir, "AGENTS.md")
+  const workspaceNodeModules = path.join(workspaceConfigDir, "node_modules")
+  const nodeModulesCache = path.join(RuntimeConfig.stateRoot, "opencode-node-modules-cache")
 
   await mkdir(projectDir, { recursive: true })
   await rm(workspaceAgentsFile, { force: true })
   await rm(workspaceConfigFile, { force: true })
-  await rm(workspaceConfigDir, { recursive: true, force: true })
 
-  await copyFile(path.join(RuntimeConfig.templateDir, "AGENTS.md"), workspaceAgentsFile)
+  // Save node_modules to shared cache before deleting .opencode
+  try {
+    await stat(workspaceNodeModules)
+    await rm(nodeModulesCache, { recursive: true, force: true })
+    await cp(workspaceNodeModules, nodeModulesCache, { recursive: true })
+    console.log("[agent-runtime] Cached node_modules for reuse")
+  } catch {
+    // node_modules not present yet — nothing to cache
+  }
+
+  await rm(workspaceConfigDir, { recursive: true, force: true })
   await cp(path.join(RuntimeConfig.templateDir, ".opencode"), workspaceConfigDir, { recursive: true })
+
+  // Restore cached node_modules to skip npm reification
+  try {
+    await stat(nodeModulesCache)
+    await cp(nodeModulesCache, workspaceNodeModules, { recursive: true })
+    console.log("[agent-runtime] Restored cached node_modules — skipping npm install")
+  } catch {
+    // No cache yet; opencode will install on first run
+  }
+
   await copyFile(path.join(RuntimeConfig.templateDir, "opencode.json"), workspaceConfigFile)
   await applyWorkspaceModelConfig(workspaceConfigFile, executionConfig)
 }
@@ -213,25 +250,40 @@ function bufferStream(run, field, text) {
 
 function logStdoutLine(run, line) {
   const trimmed = line.trim()
-  if (!trimmed) {
-    return
-  }
+  if (!trimmed) return
   try {
     const entry = JSON.parse(trimmed)
     if (entry.type === "text") {
+      const preview = String(entry.text ?? "").slice(0, 200).replace(/\n/g, " ")
+      if (preview) console.log(`[agent:${run.agentRunId.slice(0, 8)}] [text] ${preview}`)
       return
     }
     if (entry.type === "tool_use") {
+      const toolName = entry.part?.tool ?? entry.name ?? "?"
+      const input = entry.part?.state?.input ?? entry.input ?? {}
+      const status = entry.part?.state?.status ?? "?"
+      const inputPreview = JSON.stringify(input).slice(0, 300)
+      console.log(`[agent:${run.agentRunId.slice(0, 8)}] [tool_use] ${toolName} (${status}) — ${inputPreview}`)
       return
     }
     if (entry.type === "tool_result") {
+      const toolName = entry.part?.tool ?? "?"
+      const status = entry.part?.state?.status ?? "?"
+      const output = entry.part?.state?.output ?? entry.content ?? ""
+      const outputPreview = String(output).slice(0, 200)
+      console.log(`[agent:${run.agentRunId.slice(0, 8)}] [tool_result] ${toolName} (${status}) → ${outputPreview}`)
       return
     }
     if (entry.type === "step_finish") {
+      const usage = entry.part?.usage ?? entry.usage ?? {}
+      console.log(`[agent:${run.agentRunId.slice(0, 8)}] [step_finish] usage=${JSON.stringify(usage)}`)
       return
     }
+    // Unknown structured event — log type only
+    console.log(`[agent:${run.agentRunId.slice(0, 8)}] [opencode:${entry.type ?? "?"}]`)
   } catch {
-    return
+    // Non-JSON lines from opencode (startup messages, errors, etc.)
+    if (trimmed) console.log(`[agent:${run.agentRunId.slice(0, 8)}] [opencode-raw] ${trimmed.slice(0, 300)}`)
   }
 }
 
@@ -241,7 +293,8 @@ function appendLogBuffer(run, field, chunk) {
   if (field === "stderr") {
     const lines = text.split("\n")
     for (const line of lines) {
-      void line
+      const trimmed = line.trim()
+      if (trimmed) console.error(`[agent:${run.agentRunId.slice(0, 8)}] [stderr] ${trimmed.slice(0, 500)}`)
     }
     return
   }
@@ -263,11 +316,12 @@ async function handleProcessExit(run, code, signal) {
           ? `Run ${run.agentRunId}: OpenCode exited normally but never called a terminal Devflow tool (devflow_complete_run, devflow_request_input, or devflow_fail_run). The agent may have failed to load tools or exhausted its step limit.`
           : `OpenCode exited with code ${code ?? "unknown"}${signal ? ` and signal ${signal}` : ""} without sending a terminal Devflow event.`
 
+    console.log(`[agent:${run.agentRunId.slice(0, 8)}] [exit] code=${code} signal=${signal} timedOut=${run.timedOut} cancel=${run.cancelRequested}`)
     if (run.stderr.trim()) {
-      void run.stderr
+      console.error(`[agent:${run.agentRunId.slice(0, 8)}] [stderr-tail]\n${run.stderr.slice(-2000)}`)
     }
     if (run.stdout.trim()) {
-      void run.stdout
+      console.log(`[agent:${run.agentRunId.slice(0, 8)}] [stdout-tail]\n${run.stdout.slice(-2000)}`)
     }
 
     await postEvent({
@@ -290,6 +344,20 @@ async function handleProcessExit(run, code, signal) {
   if (activeRun?.agentRunId === run.agentRunId) {
     activeRun = null
   }
+
+  // Save HOME node_modules to cache so subsequent runs skip plugin install
+  if (run.homeConfigDir) {
+    const homeNodeModules = path.join(run.homeConfigDir, "node_modules")
+    const homeNodeModulesCache = path.join(RuntimeConfig.stateRoot, "opencode-home-node-modules-cache")
+    try {
+      await stat(homeNodeModules)
+      await rm(homeNodeModulesCache, { recursive: true, force: true })
+      await cp(homeNodeModules, homeNodeModulesCache, { recursive: true })
+      console.log("[agent-runtime] Saved HOME node_modules to cache for future runs")
+    } catch {
+      // node_modules not present — nothing to cache
+    }
+  }
 }
 
 async function startRun(command, response) {
@@ -306,10 +374,27 @@ async function startRun(command, response) {
     return
   }
 
+  const snap = command.inputSnapshot ?? {}
+  console.log(`[agent-runtime] Starting run ${command.agentRunId} phase=${command.phase} ticket=${snap.workItemKey ?? "?"}`)
+  console.log(`[agent-runtime] Snapshot keys: ${Object.keys(snap).join(", ")}`)
+  if (snap.workspace) {
+    console.log(`[agent-runtime] Workspace projectRoot: ${snap.workspace.projectRoot}`)
+    const repos = (snap.workspace.repositories ?? []).map(r => `${r.repository}@${r.projectRoot}`)
+    console.log(`[agent-runtime] Workspace repos: ${repos.join(", ")}`)
+  }
+  if (snap.workItem) {
+    const wi = snap.workItem
+    console.log(`[agent-runtime] WorkItem: key=${wi.key} title=${wi.title} status=${wi.status}`)
+    if (wi.description) console.log(`[agent-runtime] Description (first 300): ${String(wi.description).slice(0, 300)}`)
+  }
+  if (snap.previousRunSummary) {
+    console.log(`[agent-runtime] PreviousRunSummary (first 500): ${String(snap.previousRunSummary).slice(0, 500)}`)
+  }
+
   const projectDir = resolveProjectDir(command)
   const stateFile = await createStateFile(command)
   const executionConfig = resolveExecutionConfig(command)
-  const childEnv = await prepareOpenCodeEnvironment(projectDir, executionConfig)
+  const { env: childEnv, homeConfigDir } = await prepareOpenCodeEnvironment(projectDir, executionConfig)
 
   const child = spawn(RuntimeConfig.openCodeBinary, buildArgs(command, executionConfig), {
     cwd: projectDir,
@@ -330,6 +415,7 @@ async function startRun(command, response) {
     workflowId: command.workflowId,
     child,
     stateFile,
+    homeConfigDir,
     cancelRequested: false,
     timedOut: false,
     maxRunTimer: null,

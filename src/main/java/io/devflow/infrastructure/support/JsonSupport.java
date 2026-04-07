@@ -3,7 +3,7 @@ package io.devflow.infrastructure.support;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import io.devflow.application.port.support.JsonCodec;
+import io.devflow.application.support.port.JsonCodec;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.Collections;

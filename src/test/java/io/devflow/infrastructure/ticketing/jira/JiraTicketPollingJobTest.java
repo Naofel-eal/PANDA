@@ -3,7 +3,7 @@ package io.devflow.infrastructure.ticketing.jira;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import io.devflow.domain.ticketing.IncomingComment;
+import io.devflow.domain.model.ticketing.IncomingComment;
 import java.time.Instant;
 import java.util.List;
 import org.junit.jupiter.api.Test;

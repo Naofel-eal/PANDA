@@ -1,6 +1,6 @@
 package io.devflow.infrastructure.support;
 
-import io.devflow.application.port.support.HashGenerator;
+import io.devflow.application.support.port.HashGenerator;
 import jakarta.enterprise.context.ApplicationScoped;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;

@@ -176,8 +176,9 @@ final class MarkdownToAdfConverter {
       }
 
       if (matcher.group(1) != null) {
+        // **`code`** — Jira ADF does not support combining strong+code on the same node; use code only
         nodes.add(markedTextNode(matcher.group(1),
-            List.of(Map.of("type", "strong"), Map.of("type", "code"))));
+            List.of(Map.of("type", "code"))));
       } else if (matcher.group(2) != null) {
         nodes.add(markedTextNode(matcher.group(2),
             List.of(Map.of("type", "strong"))));

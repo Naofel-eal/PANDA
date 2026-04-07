@@ -2,8 +2,8 @@ package io.devflow.infrastructure.agent.opencode;
 
 import io.devflow.application.command.agent.CancelAgentRunCommand;
 import io.devflow.application.command.agent.StartAgentRunCommand;
-import io.devflow.application.port.agent.AgentRuntimePort;
-import io.devflow.application.port.support.JsonCodec;
+import io.devflow.application.agent.port.AgentRuntimePort;
+import io.devflow.application.support.port.JsonCodec;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.io.IOException;

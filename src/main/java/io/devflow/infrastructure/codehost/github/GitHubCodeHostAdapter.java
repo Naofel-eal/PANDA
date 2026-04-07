@@ -2,13 +2,13 @@ package io.devflow.infrastructure.codehost.github;
 
 import io.devflow.application.command.codehost.PublishCodeChangesCommand;
 import io.devflow.application.command.workspace.PrepareWorkspaceCommand;
-import io.devflow.application.port.codehost.CodeHostPort;
-import io.devflow.application.port.support.JsonCodec;
+import io.devflow.application.codehost.port.CodeHostPort;
+import io.devflow.application.support.port.JsonCodec;
 import io.devflow.application.service.WorkspaceLayoutService;
 import io.devflow.domain.exception.DomainException;
-import io.devflow.domain.codehost.CodeChangeRef;
-import io.devflow.domain.workspace.PreparedWorkspace;
-import io.devflow.domain.workspace.RepositoryWorkspace;
+import io.devflow.domain.model.codehost.CodeChangeRef;
+import io.devflow.domain.model.workspace.PreparedWorkspace;
+import io.devflow.domain.model.workspace.RepositoryWorkspace;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.io.IOException;
@@ -81,10 +81,12 @@ public class GitHubCodeHostAdapter implements CodeHostPort {
                 throw new DomainException("Repository workspace is missing for " + repository);
             }
 
+            String baseBranchForCheck = resolveBaseBranch(repository);
             String status = runGit(repoPath, List.of("status", "--porcelain"));
-            if (status.isBlank()) {
+            String aheadLog = runGit(repoPath, List.of("log", "origin/" + baseBranchForCheck + "..HEAD", "--oneline"));
+            if (status.isBlank() && aheadLog.isBlank()) {
                 LOG.infof("No local changes detected for repository %s, resetting to base branch", repository);
-                cleanupWorkspace(repoPath, resolveBaseBranch(repository));
+                cleanupWorkspace(repoPath, baseBranchForCheck);
                 continue;
             }
 
@@ -104,11 +106,14 @@ public class GitHubCodeHostAdapter implements CodeHostPort {
                 runGit(repoPath, List.of("add", "-A"));
 
                 String postAddStatus = runGit(repoPath, List.of("status", "--porcelain"));
-                if (postAddStatus.isBlank()) {
+                String postAddAhead = runGit(repoPath, List.of("log", "origin/" + instructions.baseBranch() + "..HEAD", "--oneline"));
+                if (postAddStatus.isBlank() && postAddAhead.isBlank()) {
                     continue;
                 }
 
-                runGit(repoPath, List.of("commit", "-m", instructions.commitMessage()));
+                if (!postAddStatus.isBlank()) {
+                    runGit(repoPath, List.of("commit", "-m", instructions.commitMessage()));
+                }
                 String remoteUrl = buildRemoteUrl(repository);
                 runGit(repoPath, List.of("push", "--force", "--set-upstream", remoteUrl, "HEAD:refs/heads/" + branchName));
                 LOG.infof("Pushed branch %s for repository %s", branchName, repository);

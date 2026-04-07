@@ -1,8 +1,8 @@
 package io.devflow.infrastructure.ticketing.jira;
 
-import io.devflow.domain.ticketing.ExternalCommentParentType;
-import io.devflow.domain.ticketing.IncomingComment;
-import io.devflow.domain.ticketing.WorkItem;
+import io.devflow.domain.model.ticketing.ExternalCommentParentType;
+import io.devflow.domain.model.ticketing.IncomingComment;
+import io.devflow.domain.model.ticketing.WorkItem;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.time.Instant;

@@ -1,14 +1,14 @@
 package io.devflow.infrastructure.http.mapper;
 
-import io.devflow.application.command.agent.ReceiveAgentEventCommand;
+import io.devflow.domain.model.agent.AgentEvent;
 import io.devflow.infrastructure.http.request.AgentEventHttpRequest;
 import jakarta.enterprise.context.ApplicationScoped;
 
 @ApplicationScoped
 public class AgentEventHttpMapper {
 
-    public ReceiveAgentEventCommand toCommand(AgentEventHttpRequest request) {
-        return new ReceiveAgentEventCommand(
+    public AgentEvent toDomain(AgentEventHttpRequest request) {
+        return new AgentEvent(
             request.eventId(),
             request.workflowId(),
             request.agentRunId(),

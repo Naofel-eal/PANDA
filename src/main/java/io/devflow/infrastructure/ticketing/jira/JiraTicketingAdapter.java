@@ -2,12 +2,12 @@ package io.devflow.infrastructure.ticketing.jira;
 
 import io.devflow.application.command.ticketing.CommentWorkItemCommand;
 import io.devflow.application.command.ticketing.TransitionWorkItemCommand;
-import io.devflow.application.port.support.JsonCodec;
-import io.devflow.application.port.ticketing.TicketingPort;
+import io.devflow.application.support.port.JsonCodec;
+import io.devflow.application.ticketing.port.TicketingPort;
 import io.devflow.domain.exception.DomainException;
-import io.devflow.domain.ticketing.IncomingComment;
-import io.devflow.domain.ticketing.WorkItem;
-import io.devflow.domain.ticketing.WorkItemTransitionTarget;
+import io.devflow.domain.model.ticketing.IncomingComment;
+import io.devflow.domain.model.ticketing.WorkItem;
+import io.devflow.domain.model.ticketing.WorkItemTransitionTarget;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.io.IOException;
