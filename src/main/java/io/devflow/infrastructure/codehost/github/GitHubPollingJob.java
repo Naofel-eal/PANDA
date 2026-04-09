@@ -92,6 +92,8 @@ public class GitHubPollingJob {
 
             WorkItem workItem = safeLoadWorkItem(ticketKey);
             if (workItem == null || !jiraConfig.reviewStatus().equalsIgnoreCase(workItem.status())) continue;
+            Instant mergedAt = extractInstant(pr.get("merged_at"));
+            if (!wasMergedAfterTicketUpdate(workItem, mergedAt)) continue;
 
             Number prNumber = (Number) pr.get("number");
             String externalId = repository + GitHubCodeHostAdapter.PULL_REQUEST_EXTERNAL_ID_SEPARATOR + prNumber.longValue();
@@ -120,6 +122,9 @@ public class GitHubPollingJob {
         String ticketKey = extractTicketKey(headBranch);
         if (ticketKey == null) return;
 
+        WorkItem workItem = safeLoadWorkItem(ticketKey);
+        if (workItem == null || !jiraConfig.reviewStatus().equalsIgnoreCase(workItem.status())) return;
+
         Number prNumber = (Number) pr.get("number");
         String externalId = repository + GitHubCodeHostAdapter.PULL_REQUEST_EXTERNAL_ID_SEPARATOR + prNumber.longValue();
 
@@ -131,25 +136,27 @@ public class GitHubPollingJob {
         allComments.addAll(issueComments);
         if (allComments.isEmpty()) return;
 
-        Map<String, Object> latestComment = allComments.stream()
-            .filter(this::isHumanComment)
-            .max(Comparator.comparing(c -> extractInstant(c.get("updated_at"))))
-            .orElse(null);
-        if (latestComment == null) return;
-
-        Instant commentDate = extractInstant(latestComment.get("created_at"));
         Instant lastCommitDate = fetchLastCommitDate(repository, headBranch);
-        if (commentDate != null && lastCommitDate != null && !commentDate.isAfter(lastCommitDate)) return;
 
-        LOG.infof("Found new review comment on PR %s for ticket %s", externalId, ticketKey);
+        List<IncomingComment> newComments = allComments.stream()
+            .filter(this::isHumanComment)
+            .filter(c -> {
+                Instant created = extractInstant(c.get("created_at"));
+                return created != null && (lastCommitDate == null || created.isAfter(lastCommitDate));
+            })
+            .sorted(Comparator.comparing(c -> extractInstant(c.get("created_at"))))
+            .map(c -> toIncomingComment(externalId, c))
+            .toList();
+        if (newComments.isEmpty()) return;
+
+        LOG.infof("Found %d new review comment(s) on PR %s for ticket %s", newComments.size(), externalId, ticketKey);
 
         CodeChangeRef codeChange = new CodeChangeRef(
             GitHubSystem.ID, externalId, repository, string(pr.get("html_url")), headBranch, baseBranch
         );
-        IncomingComment comment = toIncomingComment(externalId, latestComment);
 
         handleReviewCommentUseCase.execute(new HandleReviewCommentUseCase.Command(
-            JiraSystem.ID, ticketKey, repository, codeChange, comment
+            JiraSystem.ID, ticketKey, repository, codeChange, newComments
         ));
     }
 
@@ -207,6 +214,14 @@ public class GitHubPollingJob {
 
     private boolean isMerged(Map<String, Object> pr) {
         return pr.get("merged_at") != null;
+    }
+
+    static boolean wasMergedAfterTicketUpdate(WorkItem workItem, Instant mergedAt) {
+        if (workItem == null || mergedAt == null) {
+            return false;
+        }
+        Instant ticketUpdatedAt = workItem.updatedAt();
+        return ticketUpdatedAt == null || mergedAt.isAfter(ticketUpdatedAt);
     }
 
     private String extractHeadBranch(Map<String, Object> pr) {

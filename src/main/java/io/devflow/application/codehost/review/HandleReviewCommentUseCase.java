@@ -6,6 +6,7 @@ import io.devflow.application.workflow.port.WorkflowHolder;
 import io.devflow.domain.model.codehost.CodeChangeRef;
 import io.devflow.domain.model.ticketing.IncomingComment;
 import io.devflow.domain.model.ticketing.WorkItem;
+import java.util.List;
 import io.devflow.domain.model.workflow.Workflow;
 import io.devflow.domain.model.workflow.WorkflowPhase;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -32,8 +33,8 @@ public class HandleReviewCommentUseCase {
     public void execute(Command command) {
         UUID workflowId = UUID.randomUUID();
         UUID agentRunId = UUID.randomUUID();
-        String objective = "Address review comment on PR " + command.codeChange().externalId()
-            + " for ticket " + command.ticketKey();
+        String objective = "Address " + command.reviewComments().size() + " review comment(s) on PR "
+            + command.codeChange().externalId() + " for ticket " + command.ticketKey();
 
         Workflow workflow = Workflow.start(
             workflowId, agentRunId, command.ticketSystem(), command.ticketKey(),
@@ -44,7 +45,7 @@ public class HandleReviewCommentUseCase {
         Map<String, Object> snapshot = buildSnapshot(workflowId, command);
 
         try {
-            LOG.infof("Dispatching agent run for review comment on ticket %s", command.ticketKey());
+            LOG.infof("Dispatching agent run for %d review comment(s) on ticket %s", command.reviewComments().size(), command.ticketKey());
             dispatchAgentRunUseCase.execute(workflow, objective, snapshot);
         } catch (RuntimeException e) {
             LOG.errorf(e, "Failed to dispatch agent run for review comment on ticket %s", command.ticketKey());
@@ -58,7 +59,7 @@ public class HandleReviewCommentUseCase {
         snapshot.put("workItemSystem", command.ticketSystem());
         snapshot.put("workItemKey", command.ticketKey());
         snapshot.put("codeChange", command.codeChange());
-        snapshot.put("reviewComment", command.reviewComment());
+        snapshot.put("reviewComments", command.reviewComments());
         snapshot.put("repositories", java.util.List.of(command.repository()));
 
         WorkItem workItem = safeLoadWorkItem(command);
@@ -82,6 +83,6 @@ public class HandleReviewCommentUseCase {
         String ticketKey,
         String repository,
         CodeChangeRef codeChange,
-        IncomingComment reviewComment
+        List<IncomingComment> reviewComments
     ) {}
 }

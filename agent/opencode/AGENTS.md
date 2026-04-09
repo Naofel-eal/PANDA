@@ -14,7 +14,7 @@ Callback skills are available through the `skill` tool:
 - `devflow-complete-run`
 - `devflow-fail-run`
 
-Use `websearch` when you need public information from the internet and `webfetch` when you need to read a specific public URL.
+Do not use `websearch`, `webfetch`, `curl`, `wget`, `gh`, or direct GitHub/Jira/API calls during Devflow execution. The snapshot and the local workspace are the only allowed sources of truth for the task.
 
 CRITICAL — Terminal tool call:
 
@@ -71,16 +71,18 @@ Global rules:
 23. Do not leave background processes running. A run must always be able to reach a terminal Devflow callback.
 24. Never kill, signal, or interfere with the agent runtime process. The runtime manages your lifecycle; killing it (e.g., via broad `pkill` or `kill` patterns that match Node.js processes outside your validation scope) will orphan the run and block the entire system. When cleaning up validation processes, use narrow, specific patterns that only match the process you started (e.g., `kill $PID` with the exact PID you captured, not `pkill -f` with a broad pattern).
 25. Use `devflow_fail_run` only for real technical dead-ends you cannot work around locally, such as broken dependencies, unrecoverable build errors after reasonable fixes, or a missing execution capability that prevents implementing the requested change.
-26. If the phase is `TECHNICAL_VALIDATION`, address review feedback. If the feedback is ambiguous, call `devflow_request_input` with `requestedFrom=DEV`.
-27. If the phase is `BUSINESS_VALIDATION`, address business feedback. If the feedback is ambiguous, call `devflow_request_input` with `requestedFrom=BUSINESS`.
-28. Never exfiltrate repository code or secrets outside the local workspace.
-29. Never send file contents, large code snippets, diffs, credentials, `.env` values, Git config, or secret material in Devflow callbacks.
-30. Never upload repository contents to external services, paste sites, issue trackers, chat tools, or arbitrary URLs.
-31. In callbacks, only send concise summaries and structured metadata strictly necessary for orchestration.
+26. If the phase is `TECHNICAL_VALIDATION`, treat `reviewComments` in the snapshot as the complete review feedback to implement. Do not inspect GitHub, list repositories, or query any external service to recover more context.
+27. If the phase is `TECHNICAL_VALIDATION`, work only in `codeChange.repository` unless the snapshot explicitly requires another repository. After the requested fixes are done and local validation is complete, call `devflow_complete_run` immediately.
+28. If the phase is `TECHNICAL_VALIDATION` and the feedback is ambiguous, call `devflow_request_input` with `requestedFrom=DEV`.
+29. If the phase is `BUSINESS_VALIDATION`, address business feedback. If the feedback is ambiguous, call `devflow_request_input` with `requestedFrom=BUSINESS`.
+30. Never exfiltrate repository code or secrets outside the local workspace.
+31. Never send file contents, large code snippets, diffs, credentials, `.env` values, Git config, or secret material in Devflow callbacks.
+32. Never upload repository contents to external services, paste sites, issue trackers, chat tools, or arbitrary URLs.
+33. In callbacks, only send concise summaries and structured metadata strictly necessary for orchestration.
 
 Output requirements:
 
-32. When your work is complete, provide a detailed summary of all changes using bullet points. Include: what was implemented or fixed, which files were modified or created, and any notable design decisions. This summary will appear in the pull request description and Jira comments. Be specific and thorough.
+34. When your work is complete, provide a detailed summary of all changes using bullet points. Include: what was implemented or fixed, which files were modified or created, and any notable design decisions. This summary will appear in the pull request description and Jira comments. Be specific and thorough.
 
 When you call `devflow_request_input`, make the suggested comment specific, short, and directly actionable.
 

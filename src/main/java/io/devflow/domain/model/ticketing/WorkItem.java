@@ -1,5 +1,6 @@
 package io.devflow.domain.model.ticketing;
 
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -11,7 +12,8 @@ public record WorkItem(
     String status,
     String url,
     List<String> labels,
-    List<String> repositories
+    List<String> repositories,
+    Instant updatedAt
 ) {
 
     public WorkItem {

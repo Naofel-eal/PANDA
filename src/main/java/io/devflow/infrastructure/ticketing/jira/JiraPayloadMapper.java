@@ -60,7 +60,8 @@ public class JiraPayloadMapper {
             extractName(fields.get(ISSUE_FIELD_STATUS)),
             buildBrowseUrl(key),
             extractNames(fields.get(ISSUE_FIELD_LABELS)),
-            List.of()
+            List.of(),
+            extractIssueUpdatedAt(issue)
         );
     }
 

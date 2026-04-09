@@ -9,14 +9,18 @@
           "*": "allow"
         },
         "edit": "allow",
+        "read": "allow",
         "task": {
           "*": "deny"
         },
         "skill": {
           "*": "allow"
         },
-        "webfetch": "allow",
-        "websearch": "allow"
+        "webfetch": "deny",
+        "websearch": "deny",
+        "external_directory": {
+          "*": "allow"
+        }
       }
     }
   }

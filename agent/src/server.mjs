@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto"
 import { spawn } from "node:child_process"
-import { copyFile, cp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises"
+import { chmod, copyFile, cp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises"
 import http from "node:http"
 import path from "node:path"
 import {
@@ -55,6 +55,7 @@ function resolveExecutionConfig(command) {
 }
 
 function buildPrompt(command) {
+  const phaseDirectives = buildPhaseDirectives(command)
   return [
     "Devflow run",
     `workflowId: ${command.workflowId}`,
@@ -75,8 +76,44 @@ function buildPrompt(command) {
     "IMPORTANT: Do NOT try to fetch, curl, or access any URLs from the snapshot (including workItem.url).",
     "You do NOT have network access to Jira, GitHub APIs, or any external service.",
     "All the information you need is already in the snapshot above. Use it directly.",
-    "Do not try to interact with external systems directly."
+    "Do not try to interact with external systems directly.",
+    "",
+    ...phaseDirectives
   ].join("\n")
+}
+
+function buildPhaseDirectives(command) {
+  const snapshot = command?.inputSnapshot ?? {}
+  const repositories = Array.isArray(snapshot.repositories) ? snapshot.repositories.filter(Boolean) : []
+
+  if (command?.phase === "TECHNICAL_VALIDATION") {
+    const lines = [
+      "TECHNICAL_VALIDATION directives:",
+      "- The authoritative review feedback is already present in inputSnapshot.reviewComments.",
+      "- Do not inspect GitHub, Jira, PR pages, repository lists, or any external URL.",
+      "- Never use curl, wget, gh, websearch, or webfetch during this run.",
+      "- Use only the local workspace and the provided review comments."
+    ]
+
+    const repository = snapshot?.codeChange?.repository
+    if (typeof repository === "string" && repository.trim()) {
+      lines.push(`- Modify only repository: ${repository.trim()}`)
+    } else if (repositories.length === 1) {
+      lines.push(`- Modify only repository: ${repositories[0]}`)
+    }
+
+    lines.push("- Once the requested review fixes are implemented and validated locally, call devflow_complete_run immediately.")
+    return lines
+  }
+
+  if (repositories.length === 1) {
+    return [
+      "Repository scope:",
+      `- The only repository in scope for this run is ${repositories[0]}.`
+    ]
+  }
+
+  return []
 }
 
 function buildArgs(command, executionConfig) {
@@ -131,11 +168,13 @@ async function prepareOpenCodeEnvironment(projectDir, executionConfig) {
   const runtimeId = randomUUID()
   const runtimeRoot = path.join(RuntimeConfig.stateRoot, "opencode-runtime", runtimeId)
   const runtimeHome = path.join(runtimeRoot, "home")
+  const runtimeBinDir = path.join(runtimeRoot, "bin")
   const homeConfigDir = path.join(runtimeHome, ".config", "opencode")
   const homeNodeModulesCache = path.join(RuntimeConfig.stateRoot, "opencode-home-node-modules-cache")
   const sharedNpmCache = path.join(RuntimeConfig.stateRoot, "npm-cache")
 
   await mkdir(homeConfigDir, { recursive: true })
+  await mkdir(runtimeBinDir, { recursive: true })
   await mkdir(sharedNpmCache, { recursive: true })
 
   // Restore cached HOME node_modules to skip opencode plugin npm install
@@ -150,9 +189,26 @@ async function prepareOpenCodeEnvironment(projectDir, executionConfig) {
   // Share npm cache across runs to avoid re-downloading packages
   env.NPM_CONFIG_CACHE = sharedNpmCache
   env.HOME = runtimeHome
+  env.PATH = `${runtimeBinDir}:${env.PATH ?? ""}`
   applyExecutionConfig(env, executionConfig)
+  await installBlockedNetworkCommands(runtimeBinDir)
   await materializeWorkspaceProject(projectDir, executionConfig)
   return { env, homeConfigDir }
+}
+
+async function installBlockedNetworkCommands(runtimeBinDir) {
+  const blockedCommands = ["curl", "wget", "gh"]
+  const script = [
+    "#!/usr/bin/env bash",
+    "echo 'Devflow agent policy: external network commands are disabled for this run.' >&2",
+    "exit 64"
+  ].join("\n")
+
+  for (const command of blockedCommands) {
+    const target = path.join(runtimeBinDir, command)
+    await writeFile(target, `${script}\n`)
+    await chmod(target, 0o755)
+  }
 }
 
 async function materializeWorkspaceProject(projectDir, executionConfig) {
@@ -304,14 +360,66 @@ function appendLogBuffer(run, field, chunk) {
   }
 }
 
+function firstMatch(text, regex) {
+  const match = text.match(regex)
+  return match?.[1] ?? null
+}
+
+function normalizeLogSnippet(value) {
+  if (!value) return null
+  return String(value)
+    .replace(/\\n/g, " ")
+    .replace(/\s+/g, " ")
+    .trim() || null
+}
+
+function detectFailureDiagnostic(run) {
+  const stderr = run.stderr ?? ""
+  if (!stderr) return null
+
+  const looksLikeLlmFailure = stderr.includes("service=llm") || stderr.includes("AI_APICallError")
+  if (!looksLikeLlmFailure) return null
+
+  const provider = normalizeLogSnippet(firstMatch(stderr, /providerID=([^\s]+)/))
+  const model = normalizeLogSnippet(firstMatch(stderr, /modelID=([^\s]+)/))
+  const statusCode = normalizeLogSnippet(firstMatch(stderr, /"statusCode":(\d+)/))
+  const responseBody = normalizeLogSnippet(firstMatch(stderr, /"responseBody":"([^"]*)"/))
+  const sessionError = normalizeLogSnippet(firstMatch(stderr, /service=session\.processor error=([^\n]+?) stack=/))
+
+  let detail = "LLM provider request failed"
+  if (provider && model) {
+    detail = `LLM provider ${provider}/${model} request failed`
+  } else if (provider) {
+    detail = `LLM provider ${provider} request failed`
+  }
+
+  if (statusCode) {
+    detail += ` with HTTP ${statusCode}`
+  }
+
+  const errorText = responseBody || sessionError
+  if (errorText) {
+    detail += ` (${errorText})`
+  }
+
+  return {
+    reasonCode: statusCode === "400" ? "LLM_PROVIDER_BAD_REQUEST" : "LLM_PROVIDER_ERROR",
+    error: `${detail}.`,
+    summary: `Run ${run.agentRunId}: ${detail} before OpenCode could send a terminal Devflow callback.`
+  }
+}
+
 async function handleProcessExit(run, code, signal) {
   const state = await readStateFile(run.stateFile)
   if (!state.terminalEventSent) {
+    const diagnostic = detectFailureDiagnostic(run)
     const type = run.cancelRequested ? AgentEventType.CANCELLED : AgentEventType.FAILED
     const summary = run.cancelRequested
       ? `Run ${run.agentRunId} was cancelled by the orchestrator.`
       : run.timedOut
         ? `Run ${run.agentRunId} was terminated after exceeding maximum duration (${HTTP.maxRunDurationMinutes} minute(s)).`
+        : diagnostic?.summary
+          ? diagnostic.summary
         : code === 0
           ? `Run ${run.agentRunId}: OpenCode exited normally but never called a terminal Devflow tool (devflow_complete_run, devflow_request_input, or devflow_fail_run). The agent may have failed to load tools or exhausted its step limit.`
           : `OpenCode exited with code ${code ?? "unknown"}${signal ? ` and signal ${signal}` : ""} without sending a terminal Devflow event.`
@@ -331,7 +439,9 @@ async function handleProcessExit(run, code, signal) {
       type,
       occurredAt: new Date().toISOString(),
       summary,
+      reasonCode: diagnostic?.reasonCode,
       details: {
+        error: diagnostic?.error,
         exitCode: code,
         signal,
         stdoutTail: run.stdout,
