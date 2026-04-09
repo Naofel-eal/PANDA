@@ -1,16 +1,17 @@
 # Workflow
 
-End-to-end workflow for the DevFlow orchestrator.
+End-to-end workflow for the current DevFlow implementation.
 
 ## Flow summary
 
-1. Every eligible ticket starts with an `INFORMATION_COLLECTION` agent run — the agent explores the codebase, validates its understanding, and detects ambiguities.
-2. If the agent needs clarification, it calls `devflow_request_input` and the ticket is blocked with a Jira comment.
-3. If the agent has enough context, it calls `devflow_complete_run` and the orchestrator chains directly to an `IMPLEMENTATION` run.
-4. After implementation, the orchestrator commits, pushes, and creates PRs. The ticket moves to "To Review".
-5. Review comments on PRs trigger new agent runs to address feedback.
-6. Once all PRs are merged, the ticket moves to "To Validate".
-7. A new Jira comment on a ticket in "To Validate" triggers a fresh implementation run.
+1. Eligible tickets in "To Do" start with an `INFORMATION_COLLECTION` run.
+2. Ineligible tickets are moved to "Blocked" with a Jira comment that lists the missing information.
+3. `INFORMATION_COLLECTION` either requests clarification or chains automatically into `IMPLEMENTATION`.
+4. `IMPLEMENTATION` publishes code changes and moves the ticket to "To Review".
+5. New human feedback on an open DevFlow pull request triggers `TECHNICAL_VALIDATION` on the reviewed branch.
+6. Merged DevFlow pull requests move the ticket to "To Validate".
+7. New Jira feedback on a ticket in "To Validate" triggers `BUSINESS_VALIDATION`.
+8. Blocked and validation tickets can resume from either a new Jira comment or a later ticket update after the last DevFlow comment.
 
 ## Diagram
 
@@ -18,46 +19,47 @@ End-to-end workflow for the DevFlow orchestrator.
 flowchart TD
     start([Poll cycle])
     ignored([No action])
-    done([To Validate])
+    done([Ticket in To Validate])
 
     subgraph polling["Polling"]
-        busy{Agent busy?}
-        jiraPoll{Jira: To Do, Blocked, or To Validate ticket?}
-        githubPoll{GitHub: review comment or merged PR?}
+        busy{Workflow active?}
+        jiraPoll{Jira ticket to process?}
+        githubPoll{GitHub event to process?}
     end
 
-    subgraph info["Information Collection"]
-        eligible{Eligible?}
-        alreadySkipped{Already assessed?}
-        postEligibility[Post eligibility comment]
-        enoughInfo{Enough info?}
+    subgraph intake["Intake"]
+        eligible{Eligible To Do ticket?}
+        skipBlocked{Already blocked by eligibility comment and unchanged?}
+        blockMissing[Ticket -> Blocked + missing info comment]
+        infoCollect[INFORMATION_COLLECTION]
+        chainImpl[Chain to IMPLEMENTATION]
     end
 
-    subgraph impl["Implementation"]
-        implement[Agent implements]
-        publish[Commit, push, create PR]
+    subgraph implementation["Delivery"]
+        implement[IMPLEMENTATION]
+        publishImpl[Publish PRs]
         toReview[Ticket -> To Review]
     end
 
     subgraph review["Review"]
-        reviewComment{New review comment?}
-        afterCommit{After last commit?}
+        reviewFeedback{New human PR feedback after last commit?}
+        technicalValidation[TECHNICAL_VALIDATION]
+        republishReview[Republish fixes]
     end
 
     subgraph mergeDetection["Merge"]
-        merged{PR merged?}
-        inReview{Ticket in To Review?}
+        merged{Merged devflow PR?}
+        inReview{Ticket currently in To Review?}
         toValidate[Ticket -> To Validate]
     end
 
-    subgraph blocked["Blocked"]
+    subgraph jiraFeedback["Jira feedback"]
+        blockedFeedback{Blocked ticket has new comment or later update?}
+        validateFeedback{To Validate ticket has new comment or later update?}
+        businessValidation[BUSINESS_VALIDATION]
         inputRequired[INPUT_REQUIRED]
+        failed[FAILED]
         toBlocked[Ticket -> Blocked + comment]
-        newComment{New user comment?}
-    end
-
-    subgraph validation["To Validate"]
-        validationComment{New user comment?}
     end
 
     start --> busy
@@ -65,60 +67,71 @@ flowchart TD
     busy -- no --> jiraPoll
 
     jiraPoll -- To Do --> eligible
-    jiraPoll -- Blocked --> newComment
-    jiraPoll -- To Validate --> validationComment
+    jiraPoll -- Blocked --> blockedFeedback
+    jiraPoll -- To Validate --> validateFeedback
     jiraPoll -- nothing --> githubPoll
 
-    eligible -- no --> alreadySkipped
-    alreadySkipped -- yes --> ignored
-    alreadySkipped -- no --> postEligibility --> ignored
-    eligible -- yes --> enoughInfo
+    eligible -- no --> skipBlocked
+    skipBlocked -- yes --> ignored
+    skipBlocked -- no --> blockMissing --> ignored
+    eligible -- yes --> infoCollect
 
-    enoughInfo -- yes --> implement
-    enoughInfo -- no --> inputRequired
+    infoCollect -- COMPLETED --> chainImpl --> implement
+    infoCollect -- INPUT_REQUIRED --> toBlocked
+    infoCollect -- FAILED --> toBlocked
 
-    implement -- COMPLETED --> publish --> toReview
-    implement -- INPUT_REQUIRED --> inputRequired
+    implement -- COMPLETED --> publishImpl --> toReview
+    implement -- INPUT_REQUIRED --> toBlocked
     implement -- FAILED --> toBlocked
 
-    inputRequired --> toBlocked
+    blockedFeedback -- yes --> infoCollect
+    blockedFeedback -- no --> ignored
 
-    newComment -- yes --> implement
-    newComment -- no --> ignored
+    validateFeedback -- yes --> businessValidation
+    validateFeedback -- no --> githubPoll
 
-    validationComment -- yes --> implement
-    validationComment -- no --> ignored
+    businessValidation -- COMPLETED --> publishImpl
+    businessValidation -- INPUT_REQUIRED --> toBlocked
+    businessValidation -- FAILED --> toBlocked
 
-    githubPoll -- review --> reviewComment
-    githubPoll -- merged --> merged
+    githubPoll -- review feedback --> reviewFeedback
+    githubPoll -- merged PR --> merged
     githubPoll -- nothing --> ignored
 
-    reviewComment -- yes --> afterCommit
-    afterCommit -- yes --> implement
-    afterCommit -- no --> ignored
+    reviewFeedback -- yes --> technicalValidation
+    reviewFeedback -- no --> ignored
+
+    technicalValidation -- COMPLETED --> republishReview --> toReview
+    technicalValidation -- INPUT_REQUIRED --> toBlocked
+    technicalValidation -- FAILED --> toBlocked
 
     merged -- yes --> inReview
+    merged -- no --> ignored
     inReview -- yes --> toValidate --> done
     inReview -- no --> ignored
+
+    inputRequired --> toBlocked
+    failed --> toBlocked
 ```
 
 ## Jira status transitions
 
 | From | To | Trigger |
 |------|----|---------|
-| To Do | In Progress | Agent run starts (`RUN_STARTED`) |
-| In Progress | To Review | Implementation completed, PRs created |
-| In Progress | Blocked | Agent needs input or fails |
-| Blocked | In Progress | New user comment triggers a new agent run |
-| To Review | In Progress | Review comment triggers a fix run |
-| To Review | To Validate | All PRs merged |
-| To Validate | In Progress | New ticket comment triggers a new implementation run |
+| To Do | In Progress | Eligible ticket starts an agent run (`RUN_STARTED`) |
+| To Do | Blocked | Ticket is ineligible and DevFlow posts the missing-info comment |
+| Blocked | In Progress | Jira feedback resumes `INFORMATION_COLLECTION` |
+| In Progress | Blocked | Agent requests input, fails, or publication fails |
+| In Progress | To Review | `IMPLEMENTATION`, `TECHNICAL_VALIDATION`, or `BUSINESS_VALIDATION` publishes changes successfully |
+| To Review | In Progress | GitHub review feedback starts `TECHNICAL_VALIDATION` |
+| To Review | To Validate | A DevFlow pull request merge is detected |
+| To Validate | In Progress | Jira feedback starts `BUSINESS_VALIDATION` |
 
 ## Phase chaining
 
 When `INFORMATION_COLLECTION` completes, the orchestrator chains directly to `IMPLEMENTATION`:
 
-1. `AgentEventService` receives `COMPLETED` for info collection
-2. `DevFlowRuntime.replacePhase(IMPLEMENTATION, newAgentRunId)` updates the volatile reference
-3. A new agent run is dispatched asynchronously with a 3-second delay (to avoid deadlock on the callback thread)
-4. The agent starts implementing on the same workspace
+1. `HandleAgentEventUseCase` receives `COMPLETED` for the current `INFORMATION_COLLECTION` run.
+2. `InMemoryWorkflowHolder.replacePhase(IMPLEMENTATION, newAgentRunId)` swaps the active phase while keeping the same workflow ID.
+3. A new agent run is dispatched asynchronously after a 3-second delay.
+4. The implementation run starts on the same shared workspace.

@@ -1,33 +1,35 @@
 # Agent Callbacks
 
-HTTP contract between the agent container and the orchestrator.
+HTTP contract between the agent runtime and the orchestrator.
 
 ## Transport
 
-All callbacks are sent from the agent container to:
+The runtime posts lifecycle events to:
 
-```
+```text
 POST /internal/agent-events
 ```
 
-The orchestrator sends commands to the agent at:
+The orchestrator controls the runtime through:
 
-```
+```text
 POST /internal/agent-runs
 POST /internal/agent-runs/{agentRunId}/cancel
 ```
 
-## OpenCode project files
+## Runtime template files
 
-The following files are maintained in `agent/opencode/` and copied into the shared workspace `/workspace/runs` before each run:
+The runtime image keeps its OpenCode template under `agent/opencode/`.
 
-| File | Purpose |
-|------|---------|
-| `AGENTS.md` | Agent instructions and output requirements |
-| `opencode.json` | OpenCode configuration (model, steps, permissions) |
-| `.opencode/tools/devflow.js` | Devflow tool definitions |
-| `.opencode/lib/devflow-constants.js` | Shared constants |
-| `.opencode/skills/*/SKILL.md` | Callback skill documentation |
+Before each run, it materializes the OpenCode configuration into the shared workspace `/workspace/runs`:
+
+| File or directory | Purpose |
+|-------------------|---------|
+| `agent/opencode/AGENTS.md` | Source-controlled agent protocol for the DevFlow runtime |
+| `/workspace/runs/opencode.json` | OpenCode configuration written before the run |
+| `/workspace/runs/.opencode/tools/devflow.js` | DevFlow tool definitions |
+| `/workspace/runs/.opencode/lib/devflow-constants.js` | Shared callback constants |
+| `/workspace/runs/.opencode/skills/*/SKILL.md` | Callback skill documentation |
 
 ## Event schema
 
@@ -38,10 +40,11 @@ The following files are maintained in `agent/opencode/` and copied into the shar
   "agentRunId": "uuid",
   "type": "RUN_STARTED | PROGRESS_REPORTED | INPUT_REQUIRED | COMPLETED | FAILED | CANCELLED",
   "occurredAt": "ISO-8601",
+  "providerRunRef": "string",
   "summary": "string",
   "blockerType": "string",
   "reasonCode": "string",
-  "requestedFrom": "DEV | BUSINESS",
+  "requestedFrom": "DEV | BUSINESS | SYSTEM",
   "resumeTrigger": "string",
   "suggestedComment": "string",
   "artifacts": { ... },
@@ -55,9 +58,9 @@ Required: `eventId`, `workflowId`, `agentRunId`, `type`. All other fields are op
 
 ### `RUN_STARTED`
 
-Sent by the agent runtime (not OpenCode) after spawning the OpenCode process.
+Sent by the runtime after spawning OpenCode.
 
-**Effect**: ticket → "In Progress".
+Effect: ticket -> "In Progress".
 
 ```json
 {
@@ -68,9 +71,9 @@ Sent by the agent runtime (not OpenCode) after spawning the OpenCode process.
 
 ### `PROGRESS_REPORTED`
 
-Sent by OpenCode via `devflow_report_progress` during execution.
+Sent by OpenCode via `devflow_report_progress`.
 
-**Effect**: log only.
+Effect: log only.
 
 ```json
 {
@@ -81,9 +84,9 @@ Sent by OpenCode via `devflow_report_progress` during execution.
 
 ### `INPUT_REQUIRED`
 
-Sent by OpenCode via `devflow_request_input` when blocked on missing information.
+Sent by OpenCode via `devflow_request_input` when the run cannot continue without clarification.
 
-**Effect**: ticket → "Blocked" + comment posted + `clearRun()`.
+Effect: ticket -> "Blocked", Jira comment posted, workflow cleared.
 
 ```json
 {
@@ -99,18 +102,18 @@ Sent by OpenCode via `devflow_request_input` when blocked on missing information
 
 ### `COMPLETED`
 
-Sent by OpenCode via `devflow_complete_run` when the run is finished.
+Sent by OpenCode via `devflow_complete_run` when local work is finished.
 
-**Effect** by phase:
+Effect by phase:
 
 | Phase | Orchestrator action |
-|-------|-------------------|
-| `INFORMATION_COLLECTION` | Chain to `IMPLEMENTATION` (async, 3s delay) |
-| `IMPLEMENTATION` | Commit, push, create/reuse PRs → ticket → "To Review" → `clearRun()` |
-| `TECHNICAL_VALIDATION` | `clearRun()` |
-| `BUSINESS_VALIDATION` | `clearRun()` |
+|-------|---------------------|
+| `INFORMATION_COLLECTION` | Chain asynchronously to `IMPLEMENTATION` after 3 seconds |
+| `IMPLEMENTATION` | Publish code changes, move ticket to "To Review", then clear the workflow |
+| `TECHNICAL_VALIDATION` | Publish review fixes, keep or return the ticket to "To Review", then clear the workflow |
+| `BUSINESS_VALIDATION` | Publish follow-up fixes, move ticket to "To Review", then clear the workflow |
 
-Important: `COMPLETED` in `IMPLEMENTATION` means "local work is done". The orchestrator creates all `devflow/*` branches and pull requests.
+Important: `COMPLETED` never means "the PR already exists". It means "the local workspace is ready for publication".
 
 ```json
 {
@@ -122,7 +125,7 @@ Important: `COMPLETED` in `IMPLEMENTATION` means "local work is done". The orche
     "repoChanges": [
       {
         "repository": "my-org/frontend",
-        "commitMessage": "feat(health): add health status component [APP-123]",
+        "commitMessage": "feat(health): add health status component",
         "prTitle": "feat(health): add health status component [APP-123]"
       }
     ]
@@ -132,9 +135,9 @@ Important: `COMPLETED` in `IMPLEMENTATION` means "local work is done". The orche
 
 ### `FAILED`
 
-Sent by OpenCode via `devflow_fail_run`, or by the agent runtime as fallback when OpenCode exits without a terminal event.
+Sent by OpenCode via `devflow_fail_run`, or by the runtime as fallback when OpenCode exits without a terminal event.
 
-**Effect**: ticket → "Blocked" + error comment + `clearRun()`.
+Effect: ticket -> "Blocked", failure comment posted, workflow cleared.
 
 ```json
 {
@@ -144,7 +147,7 @@ Sent by OpenCode via `devflow_fail_run`, or by the agent runtime as fallback whe
 }
 ```
 
-Fallback example (runtime-generated):
+Fallback example:
 
 ```json
 {
@@ -160,9 +163,9 @@ Fallback example (runtime-generated):
 
 ### `CANCELLED`
 
-Sent by the agent runtime when the orchestrator cancels a run.
+Sent by the runtime when the orchestrator cancels a run.
 
-**Effect**: `clearRun()`.
+Effect: workflow cleared.
 
 ```json
 {
@@ -175,5 +178,5 @@ Sent by the agent runtime when the orchestrator cancels a run.
 
 - Exactly one terminal event per run: `INPUT_REQUIRED`, `COMPLETED`, `FAILED`, or `CANCELLED`
 - `RUN_STARTED` and `PROGRESS_REPORTED` are non-terminal
-- If OpenCode exits without a terminal event, the runtime sends `FAILED` as fallback
-- The agent never creates tickets, branches, commits, PRs, or Jira comments directly
+- If OpenCode exits without a terminal event, the runtime sends `FAILED`
+- The agent never creates tickets, branches, commits, pull requests, or Jira comments directly

@@ -2,110 +2,165 @@
 
 ## Overview
 
-DevFlow is a Quarkus orchestrator built with hexagonal architecture. It follows a ticket from creation to validation without depending on any specific tool — Jira, GitHub, and the AI agent are all replaceable adapters behind ports.
+DevFlow is a Quarkus orchestrator built with hexagonal architecture. It follows a Jira ticket through four execution phases:
 
-The current implementation (v0) is **fully stateless**: no database, no in-memory store, no outbox pattern. The only mutable state is a single `volatile RunContext currentRun` field in `DevFlowRuntime`.
+- `INFORMATION_COLLECTION`
+- `IMPLEMENTATION`
+- `TECHNICAL_VALIDATION`
+- `BUSINESS_VALIDATION`
 
-## Stateless model
+Jira, GitHub, and the AI runtime are all replaceable adapters behind ports.
 
-- All ticket and PR state is re-discovered from Jira and GitHub on every poll cycle
-- At most one agent run is active at a time, enforced by the volatile reference
-- No deduplication store — idempotency relies on Jira/GitHub status checks
-- If the orchestrator restarts mid-run, `currentRun` is lost and the ticket stays in its current Jira status until manual intervention
+The current implementation is persistent-state-free: no database, no outbox, no durable queue. The only in-memory runtime state is the currently active `Workflow`, stored in `InMemoryWorkflowHolder`.
+
+## Runtime state model
+
+- Ticket and pull request state is re-discovered from Jira and GitHub on every poll cycle.
+- At most one workflow is active at a time.
+- The in-memory `Workflow` tracks the ticket, phase, active `agentRunId`, start time, and already published pull requests.
+- If the orchestrator restarts mid-run, the active workflow is lost and any late agent callback is ignored until a new polling trigger restarts the flow.
 
 ## Topology
 
 ```
 orchestrator (Quarkus, Java 21)
-├── DevFlowRuntime          — volatile currentRun
-├── JiraTicketPollingJob     — polls Jira every minute
-├── GitHubPollingJob         — polls GitHub every minute
-├── AgentEventService        — handles agent callbacks
-└── WorkItemTransitionService — drives Jira transitions
+├── InMemoryWorkflowHolder      - holds the current Workflow
+├── JiraTicketPollingJob        - polls Jira for intake and Jira-side feedback
+├── GitHubPollingJob            - polls GitHub for merges and review feedback
+├── DispatchAgentRunUseCase     - prepares workspace and starts agent runs
+├── HandleAgentEventUseCase     - consumes agent lifecycle events
+└── PublishCodeChangesUseCase   - commits, pushes, and creates or reuses PRs
 
-agent (Node.js + OpenCode)
-├── HTTP server              — POST /internal/agent-runs, cancel
-├── OpenCode process         — AI coding agent
-└── devflow.js tools         — POST /internal/agent-events
+agent runtime (Node.js + OpenCode)
+├── HTTP server                 - POST /internal/agent-runs and cancel endpoint
+├── workspace materializer      - writes opencode config into /workspace/runs
+├── OpenCode process            - coding agent
+└── Devflow callback tools      - POST /internal/agent-events
 ```
 
 ### Docker Compose networks
 
 | Network | Members | Purpose |
 |---------|---------|---------|
-| `control` (internal) | orchestrator, agent | Agent callback traffic |
-| `egress` | orchestrator, agent | Outbound access (Jira, GitHub, LLM providers) |
+| `control` (internal) | orchestrator, agent | orchestrator-to-agent commands and agent callbacks |
+| `egress` | orchestrator, agent | outbound access to Jira, GitHub, and model providers |
 
 ## Hexagonal design
 
 ### Domain layer
 
-Business objects and enums with no external dependencies:
+Pure domain objects and enums:
 
-- `WorkItem`, `CodeChangeRef`, `IncomingComment` — neutral abstractions
-- `WorkflowPhase`, `BlockerType`, `RequestedFrom`, `ResumeTrigger` — business enums
-- Business exceptions
+- `Workflow`, `WorkflowPhase`
+- `WorkItem`, `IncomingComment`
+- `CodeChangeRef`
+- `BlockerType`, `RequestedFrom`, `ResumeTrigger`
+- domain exceptions
 
 ### Application layer
 
-- **Use cases**: `AgentEventService` — handles all agent lifecycle events
-- **Services**: `EligibilityService`, `WorkItemTransitionService`, `WorkspaceLayoutService`
-- **Runtime**: `DevFlowRuntime` (volatile `RunContext`), `RunContext` record
-- **Ports**: `TicketingPort`, `CodeHostPort`, `AgentRuntimePort`
+Main use cases and services:
+
+- `StartInfoCollectionUseCase`
+- `ResumeWorkflowUseCase`
+- `HandleReviewCommentUseCase`
+- `HandleMergedPullRequestUseCase`
+- `HandleAgentEventUseCase`
+- `PublishCodeChangesUseCase`
+- `WorkspaceLayoutService`
+- `WorkflowHolder`
+
+Ports:
+
+- `TicketingPort`
+- `CodeHostPort`
+- `AgentRuntimePort`
 
 ### Infrastructure layer
 
 Inbound adapters:
-- `AgentEventResource` — HTTP endpoint for agent callbacks
-- `JiraTicketPollingJob` — scheduled Jira poller
-- `GitHubPollingJob` — scheduled GitHub poller
+
+- `AgentEventResource`
+- `JiraTicketPollingJob`
+- `GitHubPollingJob`
 
 Outbound adapters:
-- `JiraTicketingAdapter` — implements `TicketingPort`
-- `GitHubCodeHostAdapter` — implements `CodeHostPort`
-- `HttpAgentRuntimeClient` — implements `AgentRuntimePort`
+
+- `JiraTicketingAdapter`
+- `GitHubCodeHostAdapter`
+- `HttpAgentRuntimeClient`
 
 ## Polling
 
 ### Jira (`JiraTicketPollingJob`)
 
-- Polls every minute (configurable via `JIRA_POLL_INTERVAL_MINUTES`)
-- Searches the configured epic for tickets in "To Do" status — picks the first eligible, starts an info-collection agent run
-- Searches for "Blocked" tickets — detects new user comments (author-based filtering via `/rest/api/3/myself`) and resumes the workflow
-- Searches for "To Validate" tickets — detects new user comments and starts a new implementation run
-- Skips ineligible tickets that already have an eligibility comment (with a 60-second grace period for reassessment)
-- If busy (`runtime.isBusy()`), the entire poll cycle is skipped
+- Polls every minute by default (`JIRA_POLL_INTERVAL_MINUTES`).
+- Searches the configured epic for tickets in the configured "To Do" status.
+- Eligible tickets start an `INFORMATION_COLLECTION` run.
+- Ineligible tickets are moved to "Blocked" and receive a Jira comment listing the missing fields.
+- Tickets already blocked by an eligibility comment are skipped until a user comment or a later ticket update is detected.
+- Tickets in "Blocked" resume in `INFORMATION_COLLECTION` when a new user comment exists or the ticket changed after the last DevFlow comment.
+- Tickets in "To Validate" resume in `BUSINESS_VALIDATION` using the same feedback detection rule.
+- If a workflow is active, the Jira poll cycle is skipped.
 
 ### GitHub (`GitHubPollingJob`)
 
-- Polls every minute (configurable via `GITHUB_POLL_INTERVAL_MINUTES`)
-- **Phase 1** (always runs): checks recently closed PRs on `devflow/*` branches for merges — transitions the ticket to "To Validate" with a comment
-- **Phase 2** (skipped if busy): checks open `devflow/*` PRs for new review comments — deduplicates by comparing comment `created_at` vs last commit date on the branch
+- Polls every minute by default (`GITHUB_POLL_INTERVAL_MINUTES`).
+- Phase 1 always runs: recently closed `devflow/*` pull requests are checked for merges. If the related ticket is still in "To Review" and the merge is newer than the ticket update timestamp, the ticket moves to "To Validate".
+- Phase 2 runs only when no workflow is active: open `devflow/*` pull requests are scanned for new human feedback.
+- Both pull request review comments and standard issue comments on the PR are considered.
+- Feedback is deduplicated by keeping only comments created after the last commit on the source branch.
+- Matching feedback starts a `TECHNICAL_VALIDATION` run scoped to the reviewed repository and branch.
+
+## Agent phases
+
+### `INFORMATION_COLLECTION`
+
+- Workspace is read-only by policy.
+- The agent inspects local repositories, validates ticket understanding, and either requests clarification or hands off to implementation.
+- A `COMPLETED` event automatically chains to `IMPLEMENTATION` with a fresh `agentRunId`.
+
+### `IMPLEMENTATION`
+
+- The agent edits the workspace, runs validation commands, and emits `COMPLETED` when local work is done.
+- The orchestrator then publishes the changes and moves the ticket to "To Review".
+
+### `TECHNICAL_VALIDATION`
+
+- Triggered by human GitHub feedback on an open DevFlow pull request.
+- The workspace is prepared on the existing review branch for the reviewed repository.
+- On success, the orchestrator republishes the fixes and keeps the ticket in "To Review" (the Jira transition becomes a no-op if the ticket is already there).
+
+### `BUSINESS_VALIDATION`
+
+- Triggered by Jira feedback while the ticket is in "To Validate".
+- The agent implements follow-up business feedback from Jira comments or ticket updates.
+- On success, the orchestrator publishes the changes and moves the ticket back to "To Review".
 
 ## Timeout mechanisms
 
-Two layers of defense-in-depth prevent a stuck run from blocking the system permanently:
+Two layers of defense keep a stuck run from blocking the system indefinitely.
 
-### Layer 1 — Agent runtime timeout (primary)
+### Layer 1: agent runtime timeout
 
-The Node.js runtime kills the OpenCode process after `AGENT_MAX_RUN_DURATION_MINUTES` (default `15` minutes). The process exit triggers a `FAILED` fallback callback to the orchestrator.
+The Node.js runtime kills the OpenCode process after `AGENT_MAX_RUN_DURATION_MINUTES` (default `15` minutes).
 
-Sequence: timer expires → `SIGTERM` → wait 5s → `SIGKILL` if still alive → `handleProcessExit` → send `FAILED`
+Sequence: timer expires -> `SIGTERM` -> wait 5 seconds -> `SIGKILL` if still alive -> fallback `FAILED` callback.
 
-### Layer 2 — Orchestrator stale-run detection (backup)
+### Layer 2: orchestrator stale-run detection
 
-The polling jobs check `DevFlowRuntime.isStale()` before skipping for `isBusy()`. If a run exceeds the hard timeout plus `AGENT_STALE_TIMEOUT_BUFFER_MINUTES` (defaults `15 + 5 = 20` minutes), the orchestrator sends a cancel command and clears `currentRun` locally.
+Both polling jobs call stale-run cancellation before skipping for `isBusy()`. If the active workflow exceeds `AGENT_MAX_RUN_DURATION_MINUTES + AGENT_STALE_TIMEOUT_BUFFER_MINUTES` (default `15 + 5 = 20` minutes), the orchestrator sends a cancel command to the agent runtime and clears the in-memory workflow locally.
 
-The two timers are deliberately staggered (default `15` min agent, `20` min orchestrator) so Layer 1 fires first under normal conditions. Layer 2 only activates if the agent runtime itself is unreachable or stuck.
+The timers are intentionally staggered so the runtime timeout fires first under normal conditions.
 
 ## Security boundaries
 
-- Jira and GitHub credentials stay in the orchestrator container
-- The agent has no access to business-system secrets
-- The agent cannot talk to Jira or GitHub directly — only to `POST /internal/agent-events`
-- The GitHub token is not injected into the agent container
-- Git remotes in the shared workspace are credential-free
-- Only the orchestrator injects GitHub authentication when executing `git clone`, `git fetch`, or `git push`
+- Jira credentials stay in the orchestrator container.
+- The orchestrator GitHub token also stays in the orchestrator container.
+- The agent runtime only receives the model-provider credentials required for the current run.
+- Git remotes in the shared workspace are credential-free.
+- The runtime replaces `curl`, `wget`, and `gh` with blocking shims during agent runs.
+- Only the orchestrator injects authentication when running `git clone`, `git fetch`, or `git push`.
 
 ## Shared workspace
 
@@ -113,31 +168,31 @@ Both containers mount `/workspace/runs` as a shared volume.
 
 ```
 /workspace/runs/
-├─ AGENTS.md              # Agent instructions (copied before each run)
-├─ opencode.json           # OpenCode config
+├─ opencode.json
 ├─ .opencode/
-│  ├─ skills/              # Callback skills (report-progress, request-input, complete-run, fail-run)
-│  ├─ tools/devflow.js     # Devflow tool definitions
+│  ├─ skills/
+│  ├─ tools/devflow.js
 │  └─ lib/devflow-constants.js
-├─ repo-a/                 # Checked out repository
-└─ repo-b/                 # Checked out repository
+├─ repo-a/
+└─ repo-b/
 ```
 
-- Before each run, the agent runtime copies `agent/opencode/` template into `/workspace/runs`
-- For new tickets, each repository is reset to its configured base branch
-- For review comments, the reviewed repository is checked out on the existing `devflow/*` feature branch
-- After PR publication, each repository is reset to its base branch
+- Before each run, the agent runtime materializes `opencode.json` and `.opencode/` into `/workspace/runs`.
+- Repositories are checked out directly under `/workspace/runs` using the repository slug suffix (`my-org/api` -> `/workspace/runs/api`).
+- For new tickets and business-validation feedback, repositories are prepared on their configured base branches unless the snapshot pins a specific branch.
+- For technical validation, the reviewed repository is prepared on the existing `devflow/*` source branch.
+- After publication, each repository is reset to its base branch.
 
 ## Git workflow
 
-All Git operations are performed by the orchestrator (never by the agent):
+All Git publication is handled by the orchestrator, never by the agent:
 
-1. **Clone/fetch** with injected credentials
-2. **Checkout** base branch or feature branch
-3. After agent completes implementation:
-   - Detect modified files in each repository
-   - Create `devflow/{ticket-key}/{repo-slug}` branch
-   - Commit with agent-provided message (or default)
-   - Push branch
-   - Create or reuse GitHub pull request
-   - Reset workspace to base branch
+1. Clone or refresh each configured repository with injected credentials.
+2. Check out the correct base branch or existing review branch.
+3. After the agent signals `COMPLETED`, inspect the modified repositories.
+4. For each changed repository:
+   - create or reuse a `devflow/{ticket-key}/{repo-slug}` branch by default
+   - commit with agent-provided metadata when available
+   - force-push the branch
+   - create a new pull request or reuse the existing open one for that branch
+5. Reset the workspace back to the configured base branch.

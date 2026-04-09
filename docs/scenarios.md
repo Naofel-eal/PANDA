@@ -1,184 +1,208 @@
 # Scenarios
 
-Exhaustive list of every scenario handled by the current implementation. This is not a design target — it describes what the code does today.
+This file lists the concrete scenarios handled by the current implementation. It documents what the code does today, not an aspirational design.
 
 ## Components
 
-- **Jira** — polled periodically
-- **GitHub** — polled periodically
-- **Orchestrator** — stateless Quarkus app, volatile `currentRun`
-- **Agent** — Node.js runtime + OpenCode
+- Jira is polled periodically.
+- GitHub is polled periodically.
+- The orchestrator is a Quarkus app with one in-memory active `Workflow`.
+- The agent runtime is Node.js plus OpenCode.
 
 ## Global rules
 
-- `JiraTicketPollingJob` polls Jira every minute
-- `GitHubPollingJob` polls GitHub every minute
-- The orchestrator launches agent runs via direct HTTP (no outbox)
-- OpenCode sends events to the orchestrator via Devflow tools
-- The orchestrator is the only component that comments on Jira and publishes to GitHub
-- One agent run at a time (volatile `currentRun`)
-- No database — state is re-discovered from Jira/GitHub each cycle
+- `JiraTicketPollingJob` polls Jira every minute by default.
+- `GitHubPollingJob` polls GitHub every minute by default.
+- The orchestrator launches agent runs via direct HTTP.
+- OpenCode reports lifecycle events through DevFlow callback tools.
+- The orchestrator alone comments on Jira and publishes to GitHub.
+- Only one workflow can be active at a time.
+- There is no persistent state store; Jira and GitHub are re-read every cycle.
 
 ## Ticket intake
 
 ### 1. Eligible "To Do" ticket
 
-Conditions: ticket is in "To Do" in the configured epic, has title, description, and at least one repository is configured.
+Conditions: the ticket is in the configured "To Do" status inside the configured epic, has the required fields, and at least one configured repository is available.
 
-Flow: `JiraTicketPollingJob` → `EligibilityService` evaluates → `DevFlowRuntime.startRun()` → `POST /internal/agent-runs` (phase `INFORMATION_COLLECTION`) → agent sends `RUN_STARTED` → ticket transitions to "In Progress".
+Flow: `JiraTicketPollingJob` loads the ticket and comments -> `StartInfoCollectionUseCase` starts a workflow in phase `INFORMATION_COLLECTION` -> `POST /internal/agent-runs` -> agent sends `RUN_STARTED` -> ticket transitions to "In Progress".
 
 ### 2. Ineligible "To Do" ticket
 
-Conditions: missing title, description, or no repository configured.
+Conditions: title, description, or repository configuration is missing.
 
-Flow: `JiraTicketPollingJob` → `EligibilityService` returns missing fields → post Jira comment listing what's missing. Ticket stays in "To Do".
+Flow: Jira polling detects missing fields -> ticket transitions to "Blocked" -> DevFlow posts a Jira comment listing the missing information.
 
-### 3. Ineligible ticket already assessed (skip)
+### 3. Ineligible ticket already assessed
 
-Conditions: DevFlow already posted an eligibility comment, no new user comment or ticket update since then (beyond 60-second grace period).
+Conditions: DevFlow already posted the eligibility-blocking comment and there has been no later user comment and no later ticket update after the grace period.
 
-Flow: `shouldSkipIneligibleTicket()` returns `true` → ticket is silently ignored.
+Flow: `shouldSkipIneligibleTicket()` returns `true` -> the ticket is ignored for this poll cycle.
 
-### 4. Ineligible ticket updated by user
+### 4. Ineligible ticket updated by the user
 
-Conditions: DevFlow posted an eligibility comment, but the ticket was updated (description changed or new comment).
+Conditions: DevFlow already blocked the ticket, but the user added a comment or updated the ticket after the last DevFlow comment.
 
-Flow: `shouldSkipIneligibleTicket()` returns `false` → re-evaluate → start run if now eligible, or post new eligibility comment.
+Flow: the ticket is re-evaluated -> if now eligible, `INFORMATION_COLLECTION` starts; otherwise DevFlow blocks it again with an updated missing-info comment.
 
 ## Blocked ticket handling
 
 ### 5. Blocked ticket with new user comment
 
-Conditions: ticket in "Blocked" status, latest user comment is newer than latest DevFlow comment.
+Conditions: the ticket is in "Blocked" and the latest user comment is newer than the latest DevFlow comment.
 
-Flow: `JiraTicketPollingJob` detects new user comment → `startRun()` with `INFORMATION_COLLECTION` → agent resumes work.
+Flow: Jira polling resumes the workflow in phase `INFORMATION_COLLECTION`.
 
-Comment author identification uses the Jira account ID resolved via `/rest/api/3/myself`, with content-based fallback.
+### 6. Blocked ticket updated after the last DevFlow comment
 
-### 6. Blocked ticket without new comment
+Conditions: the ticket is in "Blocked", there is no newer user comment, but the ticket `updated` timestamp is later than the last DevFlow comment plus the reassessment grace period.
 
-Flow: No new user comment detected → nothing happens.
+Flow: Jira polling resumes the workflow in phase `INFORMATION_COLLECTION`.
+
+### 7. Blocked ticket without new feedback
+
+Flow: nothing happens.
 
 ## To Validate ticket handling
 
-### 7. To Validate ticket with new user comment
+### 8. To Validate ticket with new user comment
 
-Conditions: ticket in "To Validate" status, latest user comment is newer than the latest DevFlow validation comment.
+Conditions: the ticket is in "To Validate" and the latest user comment is newer than the latest DevFlow comment.
 
-Flow: `JiraTicketPollingJob` detects new user comment → `startRun()` with `IMPLEMENTATION` → agent addresses validation feedback → publish flow creates a new PR if code changes are required.
+Flow: Jira polling resumes the workflow in phase `BUSINESS_VALIDATION`.
 
-### 8. To Validate ticket without new comment
+### 9. To Validate ticket updated after the last DevFlow comment
 
-Flow: No new user comment detected → nothing happens.
+Conditions: the ticket is in "To Validate", there is no newer user comment, but the ticket `updated` timestamp is later than the last DevFlow comment plus the reassessment grace period.
+
+Flow: Jira polling resumes the workflow in phase `BUSINESS_VALIDATION`.
+
+### 10. To Validate ticket without new feedback
+
+Flow: nothing happens.
 
 ## Agent lifecycle
 
-### 9. Run started
+### 11. Run started
 
-Flow: `POST /internal/agent-runs` → agent spawns OpenCode → sends `RUN_STARTED` → orchestrator transitions ticket to "In Progress".
+Flow: `POST /internal/agent-runs` -> the runtime spawns OpenCode -> `RUN_STARTED` is sent -> the ticket transitions to "In Progress".
 
-### 10. Progress reported
+### 12. Progress reported
 
-Flow: agent calls `devflow_report_progress` → sends `PROGRESS_REPORTED` → orchestrator logs only, no transition.
+Flow: the agent calls `devflow_report_progress` -> `PROGRESS_REPORTED` is logged only.
 
-### 11. Input required
+### 13. Input required
 
-Flow: agent calls `devflow_request_input` → sends `INPUT_REQUIRED` → orchestrator transitions to "Blocked" + posts suggested comment + `clearRun()`.
+Flow: the agent calls `devflow_request_input` -> `INPUT_REQUIRED` -> ticket transitions to "Blocked" -> suggested Jira comment is posted -> active workflow is cleared.
 
-### 12. Info collection completed
+### 14. Information collection completed
 
-Conditions: run is in phase `INFORMATION_COLLECTION`.
+Conditions: the active phase is `INFORMATION_COLLECTION`.
 
-Flow: agent calls `devflow_complete_run` → `COMPLETED` → `replacePhase(IMPLEMENTATION, newRunId)` → dispatch new agent run asynchronously (3s delay).
+Flow: the agent calls `devflow_complete_run` -> `COMPLETED` -> `InMemoryWorkflowHolder.replacePhase(IMPLEMENTATION, newAgentRunId)` -> a new implementation run is dispatched asynchronously after 3 seconds.
 
-### 13. Implementation completed
+### 15. Implementation completed
 
-Conditions: run is in phase `IMPLEMENTATION`.
+Conditions: the active phase is `IMPLEMENTATION`.
 
-Flow: agent calls `devflow_complete_run` → `COMPLETED` → orchestrator inspects repositories → commit + push + create/reuse PRs → transition to "To Review" + post Jira comment with PR links → `clearRun()`.
+Flow: the agent calls `devflow_complete_run` -> `COMPLETED` -> the orchestrator publishes code changes -> ticket moves to "To Review" -> Jira comment with PR links is posted -> workflow is cleared.
 
-Key: `devflow_complete_run` means "local work is done". The orchestrator creates all branches and PRs.
+### 16. Technical validation completed
 
-### 14. Validation completed
+Conditions: the active phase is `TECHNICAL_VALIDATION`.
 
-Conditions: run is in phase `TECHNICAL_VALIDATION` or `BUSINESS_VALIDATION`.
+Flow: the agent calls `devflow_complete_run` -> `COMPLETED` -> the orchestrator publishes review fixes, typically to the same branch and PR -> the ticket remains or returns to "To Review" -> workflow is cleared.
 
-Flow: agent calls `devflow_complete_run` → `COMPLETED` → `clearRun()`.
+### 17. Business validation completed
 
-### 15. Run failed
+Conditions: the active phase is `BUSINESS_VALIDATION`.
 
-Flow: agent calls `devflow_fail_run` → `FAILED` → transition to "Blocked" + post error comment + `clearRun()`.
+Flow: the agent calls `devflow_complete_run` -> `COMPLETED` -> the orchestrator publishes the business follow-up changes -> ticket transitions to "To Review" -> workflow is cleared.
 
-### 16. Agent exits without terminal event
+### 18. Completed event but no publishable changes exist
 
-Flow: OpenCode process exits without calling any terminal tool → agent runtime sends `FAILED` as fallback (with diagnostic stdout/stderr tails) → treated as scenario 13.
+Conditions: the agent emits `COMPLETED`, but `GitHubCodeHostAdapter.publish()` finds no local changes across the workflow repositories.
 
-### 17. Run cancelled
+Flow: publication throws -> the ticket transitions to "Blocked" with a publish-failure comment -> workflow is cleared.
 
-Flow: orchestrator sends `POST /internal/agent-runs/{id}/cancel` → agent sends `SIGTERM` → `SIGKILL` after 5s if needed → sends `CANCELLED` → `clearRun()`.
+### 19. Run failed
+
+Flow: the agent calls `devflow_fail_run` -> `FAILED` -> the ticket transitions to "Blocked" -> a failure comment is posted -> workflow is cleared.
+
+### 20. Agent exits without a terminal event
+
+Flow: OpenCode exits without `INPUT_REQUIRED`, `COMPLETED`, or `FAILED` -> the runtime sends fallback `FAILED` with diagnostic tails -> handled as scenario 19.
+
+### 21. Run cancelled
+
+Flow: the orchestrator sends `POST /internal/agent-runs/{id}/cancel` -> the runtime sends `SIGTERM`, then `SIGKILL` after 5 seconds if needed -> `CANCELLED` is emitted -> workflow is cleared.
 
 ## GitHub integration
 
-### 18. New review comment detected
+### 22. New review feedback detected
 
-Conditions: inline review comment on a `devflow/*` PR, not from a bot, `created_at` is after the last commit date on the branch.
+Conditions: a human review comment or regular pull-request issue comment exists on an open `devflow/*` PR, and its `created_at` timestamp is later than the latest commit on the PR branch.
 
-Flow: `GitHubPollingJob` detects comment → `startRun()` with `IMPLEMENTATION` → agent addresses feedback → push to existing branch → reuse existing PR → transition to "To Review".
+Flow: `GitHubPollingJob` gathers all relevant comments -> builds a `CodeChangeRef` for the PR -> `HandleReviewCommentUseCase` starts `TECHNICAL_VALIDATION` scoped to the reviewed repository and source branch.
 
-### 19. Review comment already addressed (skip)
+### 23. Review feedback already addressed
 
-Conditions: comment `created_at` is before or equal to the last commit date on the branch.
+Conditions: the feedback comment is older than or equal to the latest commit on the branch.
 
-Flow: Comment is skipped (already addressed by a previous commit).
+Flow: the comment is ignored as already addressed.
 
-### 20. PR merged
+### 24. Pull request merged
 
-Conditions: closed PR on a `devflow/*` branch with `merged_at != null`, ticket is in "To Review".
+Conditions: a closed `devflow/*` pull request has `merged_at != null`, the related Jira ticket is still in "To Review", and the merge happened after the ticket's latest update timestamp.
 
-Flow: `GitHubPollingJob` detects merge → extracts ticket key from branch name → verifies ticket is in "To Review" → transitions to "To Validate" (before comment for idempotency) → posts merge comment.
+Flow: `GitHubPollingJob` detects the merge -> extracts the ticket key from the branch name -> `HandleMergedPullRequestUseCase` transitions the ticket to "To Validate" and posts a Jira comment.
 
-### 21. PR merged but ticket not in "To Review"
+### 25. Pull request merged but ticket is not in "To Review"
 
-Flow: Merge detected but ticket is not in "To Review" → ignored (idempotent).
+Flow: the merge is ignored for idempotency.
 
-## Busy/skip scenarios
+## Busy and skip scenarios
 
-### 22. Jira poll while agent is busy
+### 26. Jira poll while a workflow is active
 
-Flow: `runtime.isBusy()` → `true` → entire Jira poll cycle is skipped.
+Flow: `workflowHolder.isBusy()` is `true` -> the entire Jira poll cycle is skipped.
 
-### 23. GitHub Phase 2 while agent is busy
+### 27. GitHub review-feedback phase while a workflow is active
 
-Flow: Phase 1 (merge detection) always runs. Phase 2 (review comments) → `runtime.isBusy()` → skip.
+Flow: merge detection still runs, but review-feedback polling is skipped.
 
-### 24. Agent receives run while another is active
+### 28. Agent runtime receives a start request while another run is active
 
-Flow: `POST /internal/agent-runs` → agent detects `activeRun` → responds `409 another_run_is_active` → orchestrator clears run.
+Flow: `POST /internal/agent-runs` returns `409 another_run_is_active` -> the orchestrator treats the dispatch as failed and clears the workflow locally.
 
 ## Timeout scenarios
 
-### 25. Agent runtime timeout (Layer 1)
+### 29. Agent runtime timeout
 
-Conditions: OpenCode runs longer than `AGENT_MAX_RUN_DURATION_MINUTES` (default `15` minutes), no terminal event sent.
+Conditions: OpenCode exceeds `AGENT_MAX_RUN_DURATION_MINUTES` (default `15`) without sending a terminal event.
 
-Flow: timer fires → `SIGTERM` → 5s grace → `SIGKILL` if needed → `handleProcessExit()` → `FAILED` fallback with "exceeded maximum duration" → treated as scenario 13.
+Flow: timer fires -> `SIGTERM` -> 5-second grace period -> `SIGKILL` if needed -> fallback `FAILED` event -> handled as scenario 19.
 
-### 26. Orchestrator stale-run detection (Layer 2)
+### 30. Orchestrator stale-run cancellation
 
-Conditions: run active longer than `AGENT_MAX_RUN_DURATION_MINUTES + AGENT_STALE_TIMEOUT_BUFFER_MINUTES` (defaults `15 + 5 = 20` minutes), Layer 1 did not resolve it.
+Conditions: the active workflow exceeds `AGENT_MAX_RUN_DURATION_MINUTES + AGENT_STALE_TIMEOUT_BUFFER_MINUTES` (default `20` total minutes) and the runtime timeout did not resolve it first.
 
-Flow: polling job detects `runtime.isStale()` → sends cancel to agent → `clearRunIfMatches()` locally → polling resumes.
+Flow: a polling job detects staleness -> the orchestrator sends a cancel command -> it clears the workflow locally -> normal polling resumes.
 
-## End-to-end scenarios
+## End-to-end examples
 
-### 27. Happy path
+### 31. Happy path
 
-To Do → info collection → implementation → 2 PRs created → To Review → PRs merged → To Validate.
+To Do -> information collection -> implementation -> pull requests created -> To Review -> pull requests merged -> To Validate.
 
-### 28. Happy path with review feedback
+### 32. Happy path with technical review feedback
 
-To Do → info collection → implementation → PRs created → review comment → agent fixes → push to branch → PRs merged → To Validate.
+To Do -> information collection -> implementation -> To Review -> GitHub review feedback -> technical validation -> same PR updated -> PR merged -> To Validate.
 
-### 29. Ineligible then resumed
+### 33. Happy path with business validation feedback
 
-To Do (missing description) → eligibility comment → user adds description → re-evaluation → eligible → info collection → implementation.
+To Do -> information collection -> implementation -> To Review -> PR merged -> To Validate -> Jira feedback -> business validation -> new or reused PR -> To Review.
+
+### 34. Ineligible then resumed
+
+To Do with missing fields -> Blocked with eligibility comment -> user updates the ticket -> re-evaluation -> information collection -> implementation.
