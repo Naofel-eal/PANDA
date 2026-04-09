@@ -1,5 +1,6 @@
 plugins {
     id 'java'
+    id 'jacoco'
     id 'io.quarkus' version '3.34.2'
 }
 
@@ -30,15 +31,28 @@ dependencies {
 
     testImplementation 'io.quarkus:quarkus-junit5'
     testImplementation 'io.rest-assured:rest-assured'
+    testImplementation 'org.mockito:mockito-core:5.18.0'
+    testImplementation 'org.mockito:mockito-junit-jupiter:5.18.0'
     testCompileOnly 'org.projectlombok:lombok:1.18.38'
     testAnnotationProcessor 'org.projectlombok:lombok:1.18.38'
 }
 
 test {
     systemProperty 'java.util.logging.manager', 'org.jboss.logmanager.LogManager'
+    environment 'GIT_CONFIG_GLOBAL', file("$buildDir/git-test-config").absolutePath
+    environment 'GIT_CONFIG_NOSYSTEM', '1'
+    finalizedBy jacocoTestReport
 }
 
 compileJava {
     options.encoding = 'UTF-8'
     options.compilerArgs << '-parameters'
+}
+
+jacocoTestReport {
+    dependsOn test
+    reports {
+        xml.required = true
+        html.required = true
+    }
 }
