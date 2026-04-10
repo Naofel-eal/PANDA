@@ -1,6 +1,6 @@
-# NUD
+# No Useless Development (NUD)
 
-NUD (No Useless Development) is an autonomous coding orchestrator for Jira and GitHub. Drop a ticket in Jira, and an AI agent ([OpenCode](https://opencode.ai)) picks it up, reads the checked-out repositories, implements the change, opens or reuses pull requests, and follows up on review and validation feedback.
+NUD is an autonomous coding orchestrator for Jira and GitHub. Drop a ticket in Jira, and an AI agent ([OpenCode](https://opencode.ai)) picks it up, reads the checked-out repositories, implements the change, opens or reuses pull requests, and follows up on review and validation feedback.
 
 There is no database and no durable queue. NUD re-discovers Jira and GitHub state on every poll cycle and only keeps the currently active workflow in memory.
 
