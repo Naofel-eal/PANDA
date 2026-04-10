@@ -1,6 +1,6 @@
 # Workflow
 
-End-to-end workflow for the current NUD implementation.
+End-to-end workflow for the current PANDA implementation.
 
 ## Flow summary
 
@@ -8,10 +8,10 @@ End-to-end workflow for the current NUD implementation.
 2. Ineligible tickets are moved to "Blocked" with a Jira comment that lists the missing information.
 3. `INFORMATION_COLLECTION` either requests clarification or chains automatically into `IMPLEMENTATION`.
 4. `IMPLEMENTATION` publishes code changes and moves the ticket to "To Review".
-5. New human feedback on an open NUD pull request triggers `TECHNICAL_VALIDATION` on the reviewed branch.
-6. Merged NUD pull requests move the ticket to "To Validate".
+5. New human feedback on an open PANDA pull request triggers `TECHNICAL_VALIDATION` on the reviewed branch.
+6. Merged PANDA pull requests move the ticket to "To Validate".
 7. New Jira feedback on a ticket in "To Validate" triggers `BUSINESS_VALIDATION`.
-8. Blocked and validation tickets can resume from either a new Jira comment or a later ticket update after the last NUD comment.
+8. Blocked and validation tickets can resume from either a new Jira comment or a later ticket update after the last PANDA comment.
 
 ## Diagram
 
@@ -48,7 +48,7 @@ flowchart TD
     end
 
     subgraph mergeDetection["Merge"]
-        merged{Merged nud PR?}
+        merged{Merged panda PR?}
         inReview{Ticket currently in To Review?}
         toValidate[Ticket -> To Validate]
     end
@@ -119,12 +119,12 @@ flowchart TD
 | From | To | Trigger |
 |------|----|---------|
 | To Do | In Progress | Eligible ticket starts an agent run (`RUN_STARTED`) |
-| To Do | Blocked | Ticket is ineligible and NUD posts the missing-info comment |
+| To Do | Blocked | Ticket is ineligible and PANDA posts the missing-info comment |
 | Blocked | In Progress | Jira feedback resumes `INFORMATION_COLLECTION` |
 | In Progress | Blocked | Agent requests input, fails, or publication fails |
 | In Progress | To Review | `IMPLEMENTATION`, `TECHNICAL_VALIDATION`, or `BUSINESS_VALIDATION` publishes changes successfully |
 | To Review | In Progress | GitHub review feedback starts `TECHNICAL_VALIDATION` |
-| To Review | To Validate | A NUD pull request merge is detected |
+| To Review | To Validate | A PANDA pull request merge is detected |
 | To Validate | In Progress | Jira feedback starts `BUSINESS_VALIDATION` |
 
 ## Phase chaining

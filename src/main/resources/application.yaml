@@ -5,10 +5,10 @@ quarkus:
   swagger-ui:
     always-include: true
   smallrye-openapi:
-    info-title: NUD Orchestrator API
+    info-title: PANDA Orchestrator API
     info-version: 0.1.0-SNAPSHOT
 
-nud:
+panda:
   agent-runtime:
     base-url: ${AGENT_BASE_URL:http://agent:8081}
     hard-timeout-minutes: ${AGENT_MAX_RUN_DURATION_MINUTES:15}
@@ -21,7 +21,7 @@ nud:
     gemini-api-key: ${GEMINI_API_KEY:}
     copilot-github-token: ${COPILOT_GITHUB_TOKEN:}
   workspace:
-    run-root: ${NUD_WORKSPACE_RUN_ROOT:/workspace/runs}
+    run-root: ${PANDA_WORKSPACE_RUN_ROOT:/workspace/runs}
   jira:
     base-url: ${JIRA_BASE_URL:https://example.atlassian.net}
     user-email: ${JIRA_USER_EMAIL:}
@@ -39,6 +39,6 @@ nud:
     api-url: ${GITHUB_API_URL:https://api.github.com}
     token: ${GITHUB_TOKEN:}
     default-base-branch: ${GITHUB_DEFAULT_BASE_BRANCH:develop}
-    commit-user-name: ${GITHUB_COMMIT_USER_NAME:NUD Bot}
-    commit-user-email: ${GITHUB_COMMIT_USER_EMAIL:nud@example.local}
+    commit-user-name: ${GITHUB_COMMIT_USER_NAME:PANDA Bot}
+    commit-user-email: ${GITHUB_COMMIT_USER_EMAIL:panda@example.local}
     poll-interval-minutes: ${GITHUB_POLL_INTERVAL_MINUTES:1}

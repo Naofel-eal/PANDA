@@ -17,7 +17,7 @@ import {
 
 const config = {
   port: Number(process.env.PORT ?? String(HTTP.defaultPort)),
-  orchestratorUrl: process.env[EnvironmentName.nudOrchestratorUrl]?.trim() ?? RuntimeConfig.orchestratorUrl
+  orchestratorUrl: process.env[EnvironmentName.pandaOrchestratorUrl]?.trim() ?? RuntimeConfig.orchestratorUrl
 }
 
 let activeRun = null
@@ -57,7 +57,7 @@ function resolveExecutionConfig(command) {
 function buildPrompt(command) {
   const phaseDirectives = buildPhaseDirectives(command)
   return [
-    "NUD run",
+    "PANDA run",
     `workflowId: ${command.workflowId}`,
     `agentRunId: ${command.agentRunId}`,
     `phase: ${command.phase}`,
@@ -66,13 +66,13 @@ function buildPrompt(command) {
     "Input snapshot JSON:",
     JSON.stringify(command.inputSnapshot ?? {}, null, 2),
     "",
-    "CRITICAL: You MUST call exactly one terminal NUD tool before you finish:",
-    "- nud_complete_run (work done)",
-    "- nud_request_input (blocked, need external info)",
-    "- nud_fail_run (unrecoverable technical failure)",
+    "CRITICAL: You MUST call exactly one terminal PANDA tool before you finish:",
+    "- panda_complete_run (work done)",
+    "- panda_request_input (blocked, need external info)",
+    "- panda_fail_run (unrecoverable technical failure)",
     "If you exit without calling one of these tools, the run is LOST and the ticket will be stuck permanently.",
     "",
-    "Follow the NUD agent protocol in AGENTS.md strictly.",
+    "Follow the PANDA agent protocol in AGENTS.md strictly.",
     "IMPORTANT: Do NOT try to fetch, curl, or access any URLs from the snapshot (including workItem.url).",
     "You do NOT have network access to Jira, GitHub APIs, or any external service.",
     "All the information you need is already in the snapshot above. Use it directly.",
@@ -102,7 +102,7 @@ function buildPhaseDirectives(command) {
       lines.push(`- Modify only repository: ${repositories[0]}`)
     }
 
-    lines.push("- Once the requested review fixes are implemented and validated locally, call nud_complete_run immediately.")
+    lines.push("- Once the requested review fixes are implemented and validated locally, call panda_complete_run immediately.")
     return lines
   }
 
@@ -200,7 +200,7 @@ async function installBlockedNetworkCommands(runtimeBinDir) {
   const blockedCommands = ["curl", "wget", "gh"]
   const script = [
     "#!/usr/bin/env bash",
-    "echo 'NUD agent policy: external network commands are disabled for this run.' >&2",
+    "echo 'PANDA agent policy: external network commands are disabled for this run.' >&2",
     "exit 64"
   ].join("\n")
 
@@ -414,7 +414,7 @@ function detectFailureDiagnostic(run) {
   return {
     reasonCode: statusCode === "400" ? "LLM_PROVIDER_BAD_REQUEST" : "LLM_PROVIDER_ERROR",
     error: `${detail}.`,
-    summary: `Run ${run.agentRunId}: ${detail} before OpenCode could send a terminal NUD callback.`
+    summary: `Run ${run.agentRunId}: ${detail} before OpenCode could send a terminal PANDA callback.`
   }
 }
 
@@ -430,8 +430,8 @@ async function handleProcessExit(run, code, signal) {
         : diagnostic?.summary
           ? diagnostic.summary
         : code === 0
-          ? `Run ${run.agentRunId}: OpenCode exited normally but never called a terminal NUD tool (nud_complete_run, nud_request_input, or nud_fail_run). The agent may have failed to load tools or exhausted its step limit.`
-          : `OpenCode exited with code ${code ?? "unknown"}${signal ? ` and signal ${signal}` : ""} without sending a terminal NUD event.`
+          ? `Run ${run.agentRunId}: OpenCode exited normally but never called a terminal PANDA tool (panda_complete_run, panda_request_input, or panda_fail_run). The agent may have failed to load tools or exhausted its step limit.`
+          : `OpenCode exited with code ${code ?? "unknown"}${signal ? ` and signal ${signal}` : ""} without sending a terminal PANDA event.`
 
     console.log(`[agent:${run.agentRunId.slice(0, 8)}] [exit] code=${code} signal=${signal} timedOut=${run.timedOut} cancel=${run.cancelRequested}`)
     if (run.stderr.trim()) {
@@ -519,12 +519,12 @@ async function startRun(command, response) {
     cwd: projectDir,
     env: {
       ...childEnv,
-      [EnvironmentName.nudOrchestratorUrl]: config.orchestratorUrl,
-      [EnvironmentName.nudWorkflowId]: command.workflowId,
-      [EnvironmentName.nudAgentRunId]: command.agentRunId,
-      [EnvironmentName.nudAgentStateFile]: stateFile,
-      [EnvironmentName.nudAgentPhase]: command.phase,
-      [EnvironmentName.nudAgentObjective]: command.objective
+      [EnvironmentName.pandaOrchestratorUrl]: config.orchestratorUrl,
+      [EnvironmentName.pandaWorkflowId]: command.workflowId,
+      [EnvironmentName.pandaAgentRunId]: command.agentRunId,
+      [EnvironmentName.pandaAgentStateFile]: stateFile,
+      [EnvironmentName.pandaAgentPhase]: command.phase,
+      [EnvironmentName.pandaAgentObjective]: command.objective
     },
     stdio: ["ignore", "pipe", "pipe"]
   })

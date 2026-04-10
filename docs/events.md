@@ -113,13 +113,13 @@ Orchestrator effect: transition the ticket to "In Progress".
 
 ### `PROGRESS_REPORTED`
 
-Emitted by OpenCode via `nud_report_progress`.
+Emitted by OpenCode via `panda_report_progress`.
 
 Orchestrator effect: log only.
 
 ### `INPUT_REQUIRED`
 
-Emitted by OpenCode via `nud_request_input` when the agent cannot proceed without external input.
+Emitted by OpenCode via `panda_request_input` when the agent cannot proceed without external input.
 
 Orchestrator effect: transition the ticket to "Blocked", post the suggested comment, and clear the active workflow.
 
@@ -127,7 +127,7 @@ Expected payload fields: `blockerType`, `reasonCode`, `summary`, `requestedFrom`
 
 ### `COMPLETED`
 
-Emitted by OpenCode via `nud_complete_run` when the agent has finished its local work.
+Emitted by OpenCode via `panda_complete_run` when the agent has finished its local work.
 
 Orchestrator effect depends on the active phase:
 
@@ -149,7 +149,7 @@ Common payload fields:
 
 ### `FAILED`
 
-Emitted by OpenCode via `nud_fail_run`, or by the runtime when OpenCode exits without a terminal event.
+Emitted by OpenCode via `panda_fail_run`, or by the runtime when OpenCode exits without a terminal event.
 
 Orchestrator effect: transition the ticket to "Blocked", post an error comment, and clear the workflow.
 
@@ -165,10 +165,10 @@ Orchestrator effect: clear the workflow.
 
 | OpenCode tool | Event sent | Terminal? |
 |---------------|------------|-----------|
-| `nud_report_progress` | `PROGRESS_REPORTED` | No |
-| `nud_request_input` | `INPUT_REQUIRED` | Yes |
-| `nud_complete_run` | `COMPLETED` | Yes |
-| `nud_fail_run` | `FAILED` | Yes |
+| `panda_report_progress` | `PROGRESS_REPORTED` | No |
+| `panda_request_input` | `INPUT_REQUIRED` | Yes |
+| `panda_complete_run` | `COMPLETED` | Yes |
+| `panda_fail_run` | `FAILED` | Yes |
 | runtime automatic event | `RUN_STARTED` | No |
 | runtime automatic event | `CANCELLED` | Yes |
 

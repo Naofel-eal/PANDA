@@ -1,0 +1,19 @@
+<svg width="256" height="256" viewBox="0 0 256 256" xmlns="http://www.w3.org/2000/svg">
+    <rect width="256" height="256" rx="48" fill="#ffffff"/>
+    <circle cx="88" cy="70" r="22" fill="#111111"/>
+    <circle cx="168" cy="70" r="22" fill="#111111"/>
+    <circle cx="128" cy="112" r="64" fill="#F7F7F7" stroke="#111111" stroke-width="6"/>
+    <ellipse cx="102" cy="108" rx="18" ry="24" fill="#111111" transform="rotate(-20 102 108)"/>
+    <ellipse cx="154" cy="108" rx="18" ry="24" fill="#111111" transform="rotate(20 154 108)"/>
+    <circle cx="102" cy="110" r="5" fill="#ffffff"/>
+    <circle cx="154" cy="110" r="5" fill="#ffffff"/>
+    <ellipse cx="128" cy="132" rx="10" ry="7" fill="#111111"/>
+    <path d="M121 143 Q128 150 135 143" stroke="#111111" stroke-width="3" fill="none" stroke-linecap="round"/>
+    <text x="128" y="210" text-anchor="middle"
+          font-family="Arial, Helvetica, sans-serif"
+          font-size="28"
+          font-weight="700"
+          fill="#111111">
+        PANDA
+    </text>
+</svg>

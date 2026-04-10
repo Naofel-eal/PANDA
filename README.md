@@ -1,28 +1,30 @@
-# No Useless Development (NUD)
+# Project Automation & Delivery Assistant (PANDA)
 
-NUD is an autonomous coding orchestrator for Jira and GitHub. Drop a ticket in Jira, and an AI agent ([OpenCode](https://opencode.ai)) picks it up, reads the checked-out repositories, implements the change, opens or reuses pull requests, and follows up on review and validation feedback.
+![PANDA logo](src/main/resources/images/panda.svg)
 
-There is no database and no durable queue. NUD re-discovers Jira and GitHub state on every poll cycle and only keeps the currently active workflow in memory.
+PANDA is an autonomous coding orchestrator for Jira and GitHub. Drop a ticket in Jira, and an AI agent ([OpenCode](https://opencode.ai)) picks it up, reads the checked-out repositories, implements the change, opens or reuses pull requests, and follows up on review and validation feedback.
+
+There is no database and no durable queue. PANDA re-discovers Jira and GitHub state on every poll cycle and only keeps the currently active workflow in memory.
 
 ## What the agent actually does
 
-NUD works in explicit workflow phases:
+PANDA works in explicit workflow phases:
 
 1. `INFORMATION_COLLECTION`
    The agent explores the local workspace in read-only mode, validates its understanding of the ticket, and asks for clarification only when it is genuinely blocked.
 2. `IMPLEMENTATION`
    The agent modifies the code, runs relevant validation commands, and signals that the local work is complete. The orchestrator then creates branches, commits, pushes, and opens or reuses pull requests.
 3. `TECHNICAL_VALIDATION`
-   New human comments on an open NUD pull request trigger a focused run on the reviewed branch so the agent can address review feedback.
+   New human comments on an open PANDA pull request trigger a focused run on the reviewed branch so the agent can address review feedback.
 4. `BUSINESS_VALIDATION`
    New Jira feedback on a ticket in "To Validate" triggers a follow-up run so business feedback can be implemented and published back to review.
 
 The orchestrator also handles the surrounding workflow:
 
 - Ineligible "To Do" tickets are moved to "Blocked" with a Jira comment describing what is missing.
-- Merged NUD pull requests automatically move the ticket from "To Review" to "To Validate".
+- Merged PANDA pull requests automatically move the ticket from "To Review" to "To Validate".
 - Review feedback is deduplicated by comparing comment timestamps with the latest commit on the branch.
-- Blocked and validation tickets can resume either from a new Jira comment or from a ticket update that happened after the last NUD comment.
+- Blocked and validation tickets can resume either from a new Jira comment or from a ticket update that happened after the last PANDA comment.
 
 ## Quick start
 
@@ -65,16 +67,16 @@ All configuration lives in `.env`. See [`.env.example`](.env.example) for the ca
 | `GITHUB_TOKEN` | GitHub token used by the orchestrator for clone, fetch, push, and PR APIs | - |
 | `GITHUB_DEFAULT_BASE_BRANCH` | Fallback base branch when a repository does not override it | `develop` |
 | `GITHUB_POLL_INTERVAL_MINUTES` | GitHub poll frequency | `1` |
-| `GITHUB_COMMIT_USER_NAME` | Git author name for orchestrator-created commits | `NUD Bot` |
-| `GITHUB_COMMIT_USER_EMAIL` | Git author email for orchestrator-created commits | `nud@example.local` |
-| `NUD_GITHUB_REPOSITORIES_0_NAME` | Repository slug (for example `my-org/api`) | - |
-| `NUD_GITHUB_REPOSITORIES_0_BASE_BRANCH` | Base branch for that repository | `main` |
+| `GITHUB_COMMIT_USER_NAME` | Git author name for orchestrator-created commits | `PANDA Bot` |
+| `GITHUB_COMMIT_USER_EMAIL` | Git author email for orchestrator-created commits | `panda@example.local` |
+| `PANDA_GITHUB_REPOSITORIES_0_NAME` | Repository slug (for example `my-org/api`) | - |
+| `PANDA_GITHUB_REPOSITORIES_0_BASE_BRANCH` | Base branch for that repository | `main` |
 
 Add more repositories with indices `1`, `2`, and so on.
 
 ### Agent runtime and models
 
-NUD sends model-provider credentials to the agent runtime per run. Configure the runtime plus the provider that matches `OPENCODE_MODEL` and `OPENCODE_SMALL_MODEL`.
+PANDA sends model-provider credentials to the agent runtime per run. Configure the runtime plus the provider that matches `OPENCODE_MODEL` and `OPENCODE_SMALL_MODEL`.
 
 | Variable | Description | Default |
 |----------|-------------|---------|
@@ -110,7 +112,7 @@ NUD sends model-provider credentials to the agent runtime per run. Configure the
 
 ## Security
 
-NUD runs an AI agent with shell access, so the architecture is built around one rule: the agent never handles business-system secrets directly.
+PANDA runs an AI agent with shell access, so the architecture is built around one rule: the agent never handles business-system secrets directly.
 
 ### Credential isolation
 
@@ -131,7 +133,7 @@ The runtime also blocks common direct network helpers such as `curl`, `wget`, an
 
 - All agent callbacks are matched against the active `agentRunId`.
 - Repository writes are constrained to the shared workspace root.
-- Published branches must start with `nud/`.
+- Published branches must start with `panda/`.
 - The agent is instructed not to start applications and to limit validations to compile, lint, and test commands.
 - The runtime enforces a hard timeout, then the orchestrator applies stale-run cancellation as a backup.
 

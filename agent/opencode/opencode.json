@@ -1,8 +1,8 @@
 {
   "$schema": "https://opencode.ai/config.json",
   "agent": {
-    "nud": {
-      "description": "NUD execution agent that communicates workflow state only through NUD HTTP tools and must never publish or exfiltrate repository code.",
+    "panda": {
+      "description": "PANDA execution agent that communicates workflow state only through PANDA HTTP tools and must never publish or exfiltrate repository code.",
       "steps": 40,
       "permission": {
         "bash": {

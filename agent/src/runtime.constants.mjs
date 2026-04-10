@@ -52,21 +52,21 @@ export const Host = Object.freeze({
 
 export const RuntimeConfig = Object.freeze({
   openCodeBinary: "opencode",
-  agentName: "nud",
+  agentName: "panda",
   templateDir: "/agent/opencode",
   workspaceRoot: "/workspace/runs",
   allowedRoot: "/workspace",
-  stateRoot: "/var/lib/nud-agent/runs",
+  stateRoot: "/var/lib/panda-agent/runs",
   orchestratorUrl: "http://orchestrator:8080"
 })
 
 export const EnvironmentName = Object.freeze({
-  nudOrchestratorUrl: "NUD_ORCHESTRATOR_URL",
-  nudWorkflowId: "NUD_WORKFLOW_ID",
-  nudAgentRunId: "NUD_AGENT_RUN_ID",
-  nudAgentStateFile: "NUD_AGENT_STATE_FILE",
-  nudAgentPhase: "NUD_AGENT_PHASE",
-  nudAgentObjective: "NUD_AGENT_OBJECTIVE",
+  pandaOrchestratorUrl: "PANDA_ORCHESTRATOR_URL",
+  pandaWorkflowId: "PANDA_WORKFLOW_ID",
+  pandaAgentRunId: "PANDA_AGENT_RUN_ID",
+  pandaAgentStateFile: "PANDA_AGENT_STATE_FILE",
+  pandaAgentPhase: "PANDA_AGENT_PHASE",
+  pandaAgentObjective: "PANDA_AGENT_OBJECTIVE",
   openCodeModel: "OPENCODE_MODEL",
   openCodeSmallModel: "OPENCODE_SMALL_MODEL",
   openAiApiKey: "OPENAI_API_KEY",
