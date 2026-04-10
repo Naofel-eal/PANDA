@@ -8,7 +8,7 @@ repositories {
     mavenCentral()
 }
 
-group = 'io.devflow'
+group = 'io.nud'
 version = '0.1.0-SNAPSHOT'
 
 java {

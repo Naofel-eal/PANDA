@@ -52,21 +52,21 @@ export const Host = Object.freeze({
 
 export const RuntimeConfig = Object.freeze({
   openCodeBinary: "opencode",
-  agentName: "devflow",
+  agentName: "nud",
   templateDir: "/agent/opencode",
   workspaceRoot: "/workspace/runs",
   allowedRoot: "/workspace",
-  stateRoot: "/var/lib/devflow-agent/runs",
+  stateRoot: "/var/lib/nud-agent/runs",
   orchestratorUrl: "http://orchestrator:8080"
 })
 
 export const EnvironmentName = Object.freeze({
-  devflowOrchestratorUrl: "DEVFLOW_ORCHESTRATOR_URL",
-  devflowWorkflowId: "DEVFLOW_WORKFLOW_ID",
-  devflowAgentRunId: "DEVFLOW_AGENT_RUN_ID",
-  devflowAgentStateFile: "DEVFLOW_AGENT_STATE_FILE",
-  devflowAgentPhase: "DEVFLOW_AGENT_PHASE",
-  devflowAgentObjective: "DEVFLOW_AGENT_OBJECTIVE",
+  nudOrchestratorUrl: "NUD_ORCHESTRATOR_URL",
+  nudWorkflowId: "NUD_WORKFLOW_ID",
+  nudAgentRunId: "NUD_AGENT_RUN_ID",
+  nudAgentStateFile: "NUD_AGENT_STATE_FILE",
+  nudAgentPhase: "NUD_AGENT_PHASE",
+  nudAgentObjective: "NUD_AGENT_OBJECTIVE",
   openCodeModel: "OPENCODE_MODEL",
   openCodeSmallModel: "OPENCODE_SMALL_MODEL",
   openAiApiKey: "OPENAI_API_KEY",

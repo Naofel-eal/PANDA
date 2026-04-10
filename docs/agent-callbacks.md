@@ -25,10 +25,10 @@ Before each run, it materializes the OpenCode configuration into the shared work
 
 | File or directory | Purpose |
 |-------------------|---------|
-| `agent/opencode/AGENTS.md` | Source-controlled agent protocol for the DevFlow runtime |
+| `agent/opencode/AGENTS.md` | Source-controlled agent protocol for the NUD runtime |
 | `/workspace/runs/opencode.json` | OpenCode configuration written before the run |
-| `/workspace/runs/.opencode/tools/devflow.js` | DevFlow tool definitions |
-| `/workspace/runs/.opencode/lib/devflow-constants.js` | Shared callback constants |
+| `/workspace/runs/.opencode/tools/nud.js` | NUD tool definitions |
+| `/workspace/runs/.opencode/lib/nud-constants.js` | Shared callback constants |
 | `/workspace/runs/.opencode/skills/*/SKILL.md` | Callback skill documentation |
 
 ## Event schema
@@ -71,7 +71,7 @@ Effect: ticket -> "In Progress".
 
 ### `PROGRESS_REPORTED`
 
-Sent by OpenCode via `devflow_report_progress`.
+Sent by OpenCode via `nud_report_progress`.
 
 Effect: log only.
 
@@ -84,7 +84,7 @@ Effect: log only.
 
 ### `INPUT_REQUIRED`
 
-Sent by OpenCode via `devflow_request_input` when the run cannot continue without clarification.
+Sent by OpenCode via `nud_request_input` when the run cannot continue without clarification.
 
 Effect: ticket -> "Blocked", Jira comment posted, workflow cleared.
 
@@ -102,7 +102,7 @@ Effect: ticket -> "Blocked", Jira comment posted, workflow cleared.
 
 ### `COMPLETED`
 
-Sent by OpenCode via `devflow_complete_run` when local work is finished.
+Sent by OpenCode via `nud_complete_run` when local work is finished.
 
 Effect by phase:
 
@@ -135,7 +135,7 @@ Important: `COMPLETED` never means "the PR already exists". It means "the local 
 
 ### `FAILED`
 
-Sent by OpenCode via `devflow_fail_run`, or by the runtime as fallback when OpenCode exits without a terminal event.
+Sent by OpenCode via `nud_fail_run`, or by the runtime as fallback when OpenCode exits without a terminal event.
 
 Effect: ticket -> "Blocked", failure comment posted, workflow cleared.
 

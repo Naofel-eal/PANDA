@@ -2,7 +2,7 @@
 
 ## Overview
 
-DevFlow is a Quarkus orchestrator built with hexagonal architecture. It follows a Jira ticket through four execution phases:
+NUD (No Useless Development) is a Quarkus orchestrator built with hexagonal architecture. It follows a Jira ticket through four execution phases:
 
 - `INFORMATION_COLLECTION`
 - `IMPLEMENTATION`
@@ -35,7 +35,7 @@ agent runtime (Node.js + OpenCode)
 ├── HTTP server                 - POST /internal/agent-runs and cancel endpoint
 ├── workspace materializer      - writes opencode config into /workspace/runs
 ├── OpenCode process            - coding agent
-└── Devflow callback tools      - POST /internal/agent-events
+└── NUD callback tools      - POST /internal/agent-events
 ```
 
 ### Docker Compose networks
@@ -99,15 +99,15 @@ Outbound adapters:
 - Eligible tickets start an `INFORMATION_COLLECTION` run.
 - Ineligible tickets are moved to "Blocked" and receive a Jira comment listing the missing fields.
 - Tickets already blocked by an eligibility comment are skipped until a user comment or a later ticket update is detected.
-- Tickets in "Blocked" resume in `INFORMATION_COLLECTION` when a new user comment exists or the ticket changed after the last DevFlow comment.
+- Tickets in "Blocked" resume in `INFORMATION_COLLECTION` when a new user comment exists or the ticket changed after the last NUD comment.
 - Tickets in "To Validate" resume in `BUSINESS_VALIDATION` using the same feedback detection rule.
 - If a workflow is active, the Jira poll cycle is skipped.
 
 ### GitHub (`GitHubPollingJob`)
 
 - Polls every minute by default (`GITHUB_POLL_INTERVAL_MINUTES`).
-- Phase 1 always runs: recently closed `devflow/*` pull requests are checked for merges. If the related ticket is still in "To Review" and the merge is newer than the ticket update timestamp, the ticket moves to "To Validate".
-- Phase 2 runs only when no workflow is active: open `devflow/*` pull requests are scanned for new human feedback.
+- Phase 1 always runs: recently closed `nud/*` pull requests are checked for merges. If the related ticket is still in "To Review" and the merge is newer than the ticket update timestamp, the ticket moves to "To Validate".
+- Phase 2 runs only when no workflow is active: open `nud/*` pull requests are scanned for new human feedback.
 - Both pull request review comments and standard issue comments on the PR are considered.
 - Feedback is deduplicated by keeping only comments created after the last commit on the source branch.
 - Matching feedback starts a `TECHNICAL_VALIDATION` run scoped to the reviewed repository and branch.
@@ -127,7 +127,7 @@ Outbound adapters:
 
 ### `TECHNICAL_VALIDATION`
 
-- Triggered by human GitHub feedback on an open DevFlow pull request.
+- Triggered by human GitHub feedback on an open NUD pull request.
 - The workspace is prepared on the existing review branch for the reviewed repository.
 - On success, the orchestrator republishes the fixes and keeps the ticket in "To Review" (the Jira transition becomes a no-op if the ticket is already there).
 
@@ -171,8 +171,8 @@ Both containers mount `/workspace/runs` as a shared volume.
 ├─ opencode.json
 ├─ .opencode/
 │  ├─ skills/
-│  ├─ tools/devflow.js
-│  └─ lib/devflow-constants.js
+│  ├─ tools/nud.js
+│  └─ lib/nud-constants.js
 ├─ repo-a/
 └─ repo-b/
 ```
@@ -180,7 +180,7 @@ Both containers mount `/workspace/runs` as a shared volume.
 - Before each run, the agent runtime materializes `opencode.json` and `.opencode/` into `/workspace/runs`.
 - Repositories are checked out directly under `/workspace/runs` using the repository slug suffix (`my-org/api` -> `/workspace/runs/api`).
 - For new tickets and business-validation feedback, repositories are prepared on their configured base branches unless the snapshot pins a specific branch.
-- For technical validation, the reviewed repository is prepared on the existing `devflow/*` source branch.
+- For technical validation, the reviewed repository is prepared on the existing `nud/*` source branch.
 - After publication, each repository is reset to its base branch.
 
 ## Git workflow
@@ -191,7 +191,7 @@ All Git publication is handled by the orchestrator, never by the agent:
 2. Check out the correct base branch or existing review branch.
 3. After the agent signals `COMPLETED`, inspect the modified repositories.
 4. For each changed repository:
-   - create or reuse a `devflow/{ticket-key}/{repo-slug}` branch by default
+   - create or reuse a `nud/{ticket-key}/{repo-slug}` branch by default
    - commit with agent-provided metadata when available
    - force-push the branch
    - create a new pull request or reuse the existing open one for that branch

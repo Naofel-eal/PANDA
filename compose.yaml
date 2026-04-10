@@ -9,7 +9,7 @@ services:
       - .env
     environment:
       AGENT_BASE_URL: http://agent:8081
-      DEVFLOW_WORKSPACE_RUN_ROOT: /workspace/runs
+      NUD_WORKSPACE_RUN_ROOT: /workspace/runs
     ports:
       - "8080:8080"
     volumes:
@@ -24,11 +24,11 @@ services:
       dockerfile: Dockerfile
     environment:
       PORT: 8081
-      DEVFLOW_ORCHESTRATOR_URL: http://orchestrator:8080
+      NUD_ORCHESTRATOR_URL: http://orchestrator:8080
       AGENT_MAX_RUN_DURATION_MINUTES: ${AGENT_MAX_RUN_DURATION_MINUTES:-15}
     volumes:
       - workspace-runs:/workspace/runs
-      - agent-state:/var/lib/devflow-agent
+      - agent-state:/var/lib/nud-agent
     networks:
       - control
       - egress

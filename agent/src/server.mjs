@@ -17,7 +17,7 @@ import {
 
 const config = {
   port: Number(process.env.PORT ?? String(HTTP.defaultPort)),
-  orchestratorUrl: process.env[EnvironmentName.devflowOrchestratorUrl]?.trim() ?? RuntimeConfig.orchestratorUrl
+  orchestratorUrl: process.env[EnvironmentName.nudOrchestratorUrl]?.trim() ?? RuntimeConfig.orchestratorUrl
 }
 
 let activeRun = null
@@ -57,7 +57,7 @@ function resolveExecutionConfig(command) {
 function buildPrompt(command) {
   const phaseDirectives = buildPhaseDirectives(command)
   return [
-    "Devflow run",
+    "NUD run",
     `workflowId: ${command.workflowId}`,
     `agentRunId: ${command.agentRunId}`,
     `phase: ${command.phase}`,
@@ -66,13 +66,13 @@ function buildPrompt(command) {
     "Input snapshot JSON:",
     JSON.stringify(command.inputSnapshot ?? {}, null, 2),
     "",
-    "CRITICAL: You MUST call exactly one terminal Devflow tool before you finish:",
-    "- devflow_complete_run (work done)",
-    "- devflow_request_input (blocked, need external info)",
-    "- devflow_fail_run (unrecoverable technical failure)",
+    "CRITICAL: You MUST call exactly one terminal NUD tool before you finish:",
+    "- nud_complete_run (work done)",
+    "- nud_request_input (blocked, need external info)",
+    "- nud_fail_run (unrecoverable technical failure)",
     "If you exit without calling one of these tools, the run is LOST and the ticket will be stuck permanently.",
     "",
-    "Follow the Devflow agent protocol in AGENTS.md strictly.",
+    "Follow the NUD agent protocol in AGENTS.md strictly.",
     "IMPORTANT: Do NOT try to fetch, curl, or access any URLs from the snapshot (including workItem.url).",
     "You do NOT have network access to Jira, GitHub APIs, or any external service.",
     "All the information you need is already in the snapshot above. Use it directly.",
@@ -102,7 +102,7 @@ function buildPhaseDirectives(command) {
       lines.push(`- Modify only repository: ${repositories[0]}`)
     }
 
-    lines.push("- Once the requested review fixes are implemented and validated locally, call devflow_complete_run immediately.")
+    lines.push("- Once the requested review fixes are implemented and validated locally, call nud_complete_run immediately.")
     return lines
   }
 
@@ -163,7 +163,7 @@ function setOptionalEnv(env, name, value) {
   delete env[name]
 }
 
-async function prepareOpenCodeEnvironment(projectDir, executionConfig) {
+async function prepareOpenCodeEnvironment(projectDir, executionConfig, phase) {
   const env = { ...process.env }
   const runtimeId = randomUUID()
   const runtimeRoot = path.join(RuntimeConfig.stateRoot, "opencode-runtime", runtimeId)
@@ -192,7 +192,7 @@ async function prepareOpenCodeEnvironment(projectDir, executionConfig) {
   env.PATH = `${runtimeBinDir}:${env.PATH ?? ""}`
   applyExecutionConfig(env, executionConfig)
   await installBlockedNetworkCommands(runtimeBinDir)
-  await materializeWorkspaceProject(projectDir, executionConfig)
+  await materializeWorkspaceProject(projectDir, executionConfig, phase)
   return { env, homeConfigDir }
 }
 
@@ -200,7 +200,7 @@ async function installBlockedNetworkCommands(runtimeBinDir) {
   const blockedCommands = ["curl", "wget", "gh"]
   const script = [
     "#!/usr/bin/env bash",
-    "echo 'Devflow agent policy: external network commands are disabled for this run.' >&2",
+    "echo 'NUD agent policy: external network commands are disabled for this run.' >&2",
     "exit 64"
   ].join("\n")
 
@@ -211,7 +211,7 @@ async function installBlockedNetworkCommands(runtimeBinDir) {
   }
 }
 
-async function materializeWorkspaceProject(projectDir, executionConfig) {
+async function materializeWorkspaceProject(projectDir, executionConfig, phase) {
   const workspaceConfigDir = path.join(projectDir, ".opencode")
   const workspaceConfigFile = path.join(projectDir, "opencode.json")
   const workspaceAgentsFile = path.join(projectDir, "AGENTS.md")
@@ -245,10 +245,10 @@ async function materializeWorkspaceProject(projectDir, executionConfig) {
   }
 
   await copyFile(path.join(RuntimeConfig.templateDir, "opencode.json"), workspaceConfigFile)
-  await applyWorkspaceModelConfig(workspaceConfigFile, executionConfig)
+  await applyWorkspaceModelConfig(workspaceConfigFile, executionConfig, phase)
 }
 
-async function applyWorkspaceModelConfig(workspaceConfigFile, executionConfig) {
+async function applyWorkspaceModelConfig(workspaceConfigFile, executionConfig, phase) {
   const raw = await readFile(workspaceConfigFile, "utf8")
   const config = JSON.parse(raw)
   if (executionConfig.model) {
@@ -261,6 +261,15 @@ async function applyWorkspaceModelConfig(workspaceConfigFile, executionConfig) {
   } else {
     delete config.small_model
   }
+
+  const agentConfig = config.agent?.[RuntimeConfig.agentName]
+  const permissions = agentConfig?.permission
+  if (permissions) {
+    const isReadOnlyPhase = phase === "INFORMATION_COLLECTION"
+    permissions.edit = isReadOnlyPhase ? "deny" : "allow"
+    permissions.write = isReadOnlyPhase ? "deny" : "allow"
+  }
+
   await writeFile(workspaceConfigFile, `${JSON.stringify(config, null, 2)}\n`)
 }
 
@@ -405,7 +414,7 @@ function detectFailureDiagnostic(run) {
   return {
     reasonCode: statusCode === "400" ? "LLM_PROVIDER_BAD_REQUEST" : "LLM_PROVIDER_ERROR",
     error: `${detail}.`,
-    summary: `Run ${run.agentRunId}: ${detail} before OpenCode could send a terminal Devflow callback.`
+    summary: `Run ${run.agentRunId}: ${detail} before OpenCode could send a terminal NUD callback.`
   }
 }
 
@@ -421,8 +430,8 @@ async function handleProcessExit(run, code, signal) {
         : diagnostic?.summary
           ? diagnostic.summary
         : code === 0
-          ? `Run ${run.agentRunId}: OpenCode exited normally but never called a terminal Devflow tool (devflow_complete_run, devflow_request_input, or devflow_fail_run). The agent may have failed to load tools or exhausted its step limit.`
-          : `OpenCode exited with code ${code ?? "unknown"}${signal ? ` and signal ${signal}` : ""} without sending a terminal Devflow event.`
+          ? `Run ${run.agentRunId}: OpenCode exited normally but never called a terminal NUD tool (nud_complete_run, nud_request_input, or nud_fail_run). The agent may have failed to load tools or exhausted its step limit.`
+          : `OpenCode exited with code ${code ?? "unknown"}${signal ? ` and signal ${signal}` : ""} without sending a terminal NUD event.`
 
     console.log(`[agent:${run.agentRunId.slice(0, 8)}] [exit] code=${code} signal=${signal} timedOut=${run.timedOut} cancel=${run.cancelRequested}`)
     if (run.stderr.trim()) {
@@ -504,18 +513,18 @@ async function startRun(command, response) {
   const projectDir = resolveProjectDir(command)
   const stateFile = await createStateFile(command)
   const executionConfig = resolveExecutionConfig(command)
-  const { env: childEnv, homeConfigDir } = await prepareOpenCodeEnvironment(projectDir, executionConfig)
+  const { env: childEnv, homeConfigDir } = await prepareOpenCodeEnvironment(projectDir, executionConfig, command.phase)
 
   const child = spawn(RuntimeConfig.openCodeBinary, buildArgs(command, executionConfig), {
     cwd: projectDir,
     env: {
       ...childEnv,
-      [EnvironmentName.devflowOrchestratorUrl]: config.orchestratorUrl,
-      [EnvironmentName.devflowWorkflowId]: command.workflowId,
-      [EnvironmentName.devflowAgentRunId]: command.agentRunId,
-      [EnvironmentName.devflowAgentStateFile]: stateFile,
-      [EnvironmentName.devflowAgentPhase]: command.phase,
-      [EnvironmentName.devflowAgentObjective]: command.objective
+      [EnvironmentName.nudOrchestratorUrl]: config.orchestratorUrl,
+      [EnvironmentName.nudWorkflowId]: command.workflowId,
+      [EnvironmentName.nudAgentRunId]: command.agentRunId,
+      [EnvironmentName.nudAgentStateFile]: stateFile,
+      [EnvironmentName.nudAgentPhase]: command.phase,
+      [EnvironmentName.nudAgentObjective]: command.objective
     },
     stdio: ["ignore", "pipe", "pipe"]
   })
