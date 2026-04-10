@@ -1,6 +1,17 @@
 # Project Automation & Delivery Assistant (PANDA)
 
-![PANDA logo](src/main/resources/images/panda.svg)
+<p align="center">
+  <img src="src/main/resources/images/panda.svg" alt="PANDA logo" width="180" />
+</p>
+
+<p align="center">
+  <a href="https://github.com/Naofel-eal/PANDA/actions/workflows/ci.yml">
+    <img src="https://img.shields.io/github/actions/workflow/status/Naofel-eal/PANDA/ci.yml?label=build" alt="Build status" />
+  </a>
+  <a href="https://github.com/Naofel-eal/PANDA/stargazers">
+    <img src="https://img.shields.io/github/stars/Naofel-eal/PANDA?label=stars" alt="GitHub stars" />
+  </a>
+</p>
 
 PANDA is an autonomous coding orchestrator for Jira and GitHub. Drop a ticket in Jira, and an AI agent ([OpenCode](https://opencode.ai)) picks it up, reads the checked-out repositories, implements the change, opens or reuses pull requests, and follows up on review and validation feedback.
 
