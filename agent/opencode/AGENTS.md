@@ -14,7 +14,7 @@ Callback skills are available through the `skill` tool:
 - `panda-complete-run`
 - `panda-fail-run`
 
-Do not use `websearch`, `webfetch`, `curl`, `wget`, `gh`, or direct GitHub/Jira/API calls during PANDA execution. The snapshot and the local workspace are the only allowed sources of truth for the task.
+Do not use `websearch`, `webfetch`, `curl`, `wget`, `gh`, or direct GitHub/Jira/API calls during PANDA execution. Do not fetch or visit any URL found in the snapshot (including `workItem.url`). The snapshot and the local workspace are the only allowed sources of truth for the task.
 
 CRITICAL — Terminal tool call:
 

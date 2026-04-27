@@ -66,18 +66,6 @@ function buildPrompt(command) {
     "Input snapshot JSON:",
     JSON.stringify(command.inputSnapshot ?? {}, null, 2),
     "",
-    "CRITICAL: You MUST call exactly one terminal PANDA tool before you finish:",
-    "- panda_complete_run (work done)",
-    "- panda_request_input (blocked, need external info)",
-    "- panda_fail_run (unrecoverable technical failure)",
-    "If you exit without calling one of these tools, the run is LOST and the ticket will be stuck permanently.",
-    "",
-    "Follow the PANDA agent protocol in AGENTS.md strictly.",
-    "IMPORTANT: Do NOT try to fetch, curl, or access any URLs from the snapshot (including workItem.url).",
-    "You do NOT have network access to Jira, GitHub APIs, or any external service.",
-    "All the information you need is already in the snapshot above. Use it directly.",
-    "Do not try to interact with external systems directly.",
-    "",
     ...phaseDirectives
   ].join("\n")
 }
@@ -87,23 +75,14 @@ function buildPhaseDirectives(command) {
   const repositories = Array.isArray(snapshot.repositories) ? snapshot.repositories.filter(Boolean) : []
 
   if (command?.phase === "TECHNICAL_VALIDATION") {
-    const lines = [
-      "TECHNICAL_VALIDATION directives:",
-      "- The authoritative review feedback is already present in inputSnapshot.reviewComments.",
-      "- Do not inspect GitHub, Jira, PR pages, repository lists, or any external URL.",
-      "- Never use curl, wget, gh, websearch, or webfetch during this run.",
-      "- Use only the local workspace and the provided review comments."
-    ]
-
     const repository = snapshot?.codeChange?.repository
     if (typeof repository === "string" && repository.trim()) {
-      lines.push(`- Modify only repository: ${repository.trim()}`)
-    } else if (repositories.length === 1) {
-      lines.push(`- Modify only repository: ${repositories[0]}`)
+      return [`Repository in scope: ${repository.trim()}`]
     }
-
-    lines.push("- Once the requested review fixes are implemented and validated locally, call panda_complete_run immediately.")
-    return lines
+    if (repositories.length === 1) {
+      return [`Repository in scope: ${repositories[0]}`]
+    }
+    return []
   }
 
   if (repositories.length === 1) {
