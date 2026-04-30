@@ -14,6 +14,7 @@ import {
   ProviderRunRef,
   RuntimeConfig
 } from "./runtime.constants.mjs"
+import { resolveAwsCredentials } from "./aws-credentials.mjs"
 
 const config = {
   port: Number(process.env.PORT ?? String(HTTP.defaultPort)),
@@ -50,7 +51,42 @@ function resolveExecutionConfig(command) {
     openAiApiKey: stringValue(execution.openAiApiKey),
     anthropicApiKey: stringValue(execution.anthropicApiKey),
     geminiApiKey: stringValue(execution.geminiApiKey),
-    copilotGithubToken: stringValue(execution.copilotGithubToken)
+    copilotGithubToken: stringValue(execution.copilotGithubToken),
+    awsRegion: stringValue(execution.awsRegion),
+    llmHubClientId: stringValue(execution.llmHubClientId),
+    llmHubClientSecret: stringValue(execution.llmHubClientSecret),
+    llmHubTenantId: stringValue(execution.llmHubTenantId),
+    llmHubArn: stringValue(execution.llmHubArn),
+    llmHubResource: stringValue(execution.llmHubResource)
+  }
+}
+
+function hasLlmHubConfig(executionConfig) {
+  return executionConfig.llmHubClientId
+    && executionConfig.llmHubClientSecret
+    && executionConfig.llmHubTenantId
+    && executionConfig.llmHubArn
+    && executionConfig.llmHubResource
+}
+
+async function applyAwsCredentials(env, executionConfig) {
+  if (!hasLlmHubConfig(executionConfig)) {
+    return
+  }
+
+  const credentials = await resolveAwsCredentials({
+    clientId: executionConfig.llmHubClientId,
+    clientSecret: executionConfig.llmHubClientSecret,
+    tenantId: executionConfig.llmHubTenantId,
+    roleArn: executionConfig.llmHubArn,
+    resource: executionConfig.llmHubResource
+  })
+
+  env[EnvironmentName.awsAccessKeyId] = credentials.accessKeyId
+  env[EnvironmentName.awsSecretAccessKey] = credentials.secretAccessKey
+  env[EnvironmentName.awsSessionToken] = credentials.sessionToken
+  if (executionConfig.awsRegion) {
+    env[EnvironmentName.awsRegion] = executionConfig.awsRegion
   }
 }
 
@@ -170,6 +206,7 @@ async function prepareOpenCodeEnvironment(projectDir, executionConfig, phase) {
   env.HOME = runtimeHome
   env.PATH = `${runtimeBinDir}:${env.PATH ?? ""}`
   applyExecutionConfig(env, executionConfig)
+  await applyAwsCredentials(env, executionConfig)
   await installBlockedNetworkCommands(runtimeBinDir)
   await materializeWorkspaceProject(projectDir, executionConfig, phase)
   return { env, homeConfigDir }

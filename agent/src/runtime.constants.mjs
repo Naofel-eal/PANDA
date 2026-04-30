@@ -73,5 +73,9 @@ export const EnvironmentName = Object.freeze({
   anthropicApiKey: "ANTHROPIC_API_KEY",
   geminiApiKey: "GEMINI_API_KEY",
   githubToken: "GITHUB_TOKEN",
-  openCodeEnableExa: "OPENCODE_ENABLE_EXA"
+  openCodeEnableExa: "OPENCODE_ENABLE_EXA",
+  awsAccessKeyId: "AWS_ACCESS_KEY_ID",
+  awsSecretAccessKey: "AWS_SECRET_ACCESS_KEY",
+  awsSessionToken: "AWS_SESSION_TOKEN",
+  awsRegion: "AWS_REGION"
 })

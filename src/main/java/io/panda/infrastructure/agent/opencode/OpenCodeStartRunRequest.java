@@ -32,7 +32,13 @@ record OpenCodeStartRunRequest(
                 config.openAiApiKey().orElse(null),
                 config.anthropicApiKey().orElse(null),
                 config.geminiApiKey().orElse(null),
-                config.copilotGithubToken().orElse(null)
+                config.copilotGithubToken().orElse(null),
+                config.awsRegion().orElse(null),
+                config.llmHubClientId().orElse(null),
+                config.llmHubClientSecret().orElse(null),
+                config.llmHubTenantId().orElse(null),
+                config.llmHubArn().orElse(null),
+                config.llmHubResource().orElse(null)
             )
         );
     }
@@ -43,7 +49,13 @@ record OpenCodeStartRunRequest(
         String openAiApiKey,
         String anthropicApiKey,
         String geminiApiKey,
-        String copilotGithubToken
+        String copilotGithubToken,
+        String awsRegion,
+        String llmHubClientId,
+        String llmHubClientSecret,
+        String llmHubTenantId,
+        String llmHubArn,
+        String llmHubResource
     ) {
     }
 }

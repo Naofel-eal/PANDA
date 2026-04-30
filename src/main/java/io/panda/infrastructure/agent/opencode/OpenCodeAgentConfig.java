@@ -17,4 +17,16 @@ public interface OpenCodeAgentConfig {
     Optional<String> geminiApiKey();
 
     Optional<String> copilotGithubToken();
+
+    Optional<String> awsRegion();
+
+    Optional<String> llmHubClientId();
+
+    Optional<String> llmHubClientSecret();
+
+    Optional<String> llmHubTenantId();
+
+    Optional<String> llmHubArn();
+
+    Optional<String> llmHubResource();
 }

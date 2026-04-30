@@ -55,6 +55,36 @@ class OpenCodeStartRunRequestTest {
             public Optional<String> copilotGithubToken() {
                 return Optional.of("gh-token");
             }
+
+            @Override
+            public Optional<String> awsRegion() {
+                return Optional.of("us-east-1");
+            }
+
+            @Override
+            public Optional<String> llmHubClientId() {
+                return Optional.of("client-id");
+            }
+
+            @Override
+            public Optional<String> llmHubClientSecret() {
+                return Optional.of("client-secret");
+            }
+
+            @Override
+            public Optional<String> llmHubTenantId() {
+                return Optional.of("tenant-id");
+            }
+
+            @Override
+            public Optional<String> llmHubArn() {
+                return Optional.of("arn:aws:iam::123:role/test");
+            }
+
+            @Override
+            public Optional<String> llmHubResource() {
+                return Optional.of("resource-id");
+            }
         });
 
         assertEquals(command.commandId(), request.commandId());
@@ -70,5 +100,11 @@ class OpenCodeStartRunRequestTest {
         assertNull(request.execution().anthropicApiKey());
         assertEquals("gm-key", request.execution().geminiApiKey());
         assertEquals("gh-token", request.execution().copilotGithubToken());
+        assertEquals("us-east-1", request.execution().awsRegion());
+        assertEquals("client-id", request.execution().llmHubClientId());
+        assertEquals("client-secret", request.execution().llmHubClientSecret());
+        assertEquals("tenant-id", request.execution().llmHubTenantId());
+        assertEquals("arn:aws:iam::123:role/test", request.execution().llmHubArn());
+        assertEquals("resource-id", request.execution().llmHubResource());
     }
 }
