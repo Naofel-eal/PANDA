@@ -19,6 +19,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -266,6 +267,9 @@ class GitHubCodeHostAdapterTest {
             @Override public String commitUserName() { return "PANDA"; }
             @Override public String commitUserEmail() { return "panda@example.com"; }
             @Override public int pollIntervalMinutes() { return 1; }
+            @Override public Optional<String> appId() { return Optional.empty(); }
+            @Override public Optional<String> appPrivateKey() { return Optional.empty(); }
+            @Override public Optional<String> appInstallationId() { return Optional.empty(); }
             @Override
             public List<Repository> repositories() {
                 return List.of(
@@ -444,6 +448,21 @@ class GitHubCodeHostAdapterTest {
             }
 
             @Override
+            public Optional<String> appId() {
+                return Optional.empty();
+            }
+
+            @Override
+            public Optional<String> appPrivateKey() {
+                return Optional.empty();
+            }
+
+            @Override
+            public Optional<String> appInstallationId() {
+                return Optional.empty();
+            }
+
+            @Override
             public List<Repository> repositories() {
                 return List.of(repository("acme/api", "main"));
             }
@@ -453,6 +472,7 @@ class GitHubCodeHostAdapterTest {
     private GitHubCodeHostAdapter adapter(String apiUrl, Path workspaceRoot, GitHubConfig config) {
         GitHubCodeHostAdapter adapter = new GitHubCodeHostAdapter();
         ReflectionTestSupport.setField(adapter, "config", config);
+        ReflectionTestSupport.setField(adapter, "tokenProvider", new GitHubPatTokenProvider(config.token()));
         WorkspaceLayoutService workspaceLayoutService = new WorkspaceLayoutService();
         ReflectionTestSupport.setField(workspaceLayoutService, "config", new ApplicationConfig() {
             @Override

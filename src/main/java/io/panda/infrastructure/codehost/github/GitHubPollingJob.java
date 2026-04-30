@@ -46,6 +46,7 @@ public class GitHubPollingJob {
     private final HttpClient client = HttpClient.newBuilder().connectTimeout(HTTP_CONNECT_TIMEOUT).build();
 
     @Inject GitHubConfig config;
+    @Inject GitHubTokenProvider tokenProvider;
     @Inject WorkflowHolder workflowHolder;
     @Inject CodeHostPort codeHostPort;
     @Inject TicketingPort ticketingPort;
@@ -61,7 +62,7 @@ public class GitHubPollingJob {
         concurrentExecution = Scheduled.ConcurrentExecution.SKIP
     )
     void pollOpenPullRequests() {
-        if (isBlank(config.token())) return;
+        if (isBlank(config.token()) && config.appId().isEmpty()) return;
         List<String> repositories = codeHostPort.configuredRepositories();
         if (repositories.isEmpty()) return;
 
@@ -189,7 +190,7 @@ public class GitHubPollingJob {
     private List<Map<String, Object>> fetchList(String url) {
         HttpRequest request = HttpRequest.newBuilder()
             .uri(URI.create(url))
-            .header("Authorization", "Bearer " + config.token())
+            .header("Authorization", "Bearer " + tokenProvider.getToken())
             .header("Accept", "application/vnd.github+json")
             .timeout(HTTP_TIMEOUT).GET().build();
         try {

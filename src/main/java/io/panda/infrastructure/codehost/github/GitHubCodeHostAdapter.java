@@ -57,6 +57,9 @@ public class GitHubCodeHostAdapter implements CodeHostPort {
     GitHubConfig config;
 
     @Inject
+    GitHubTokenProvider tokenProvider;
+
+    @Inject
     WorkspaceLayoutService workspaceLayoutService;
 
     @Inject
@@ -341,7 +344,7 @@ public class GitHubCodeHostAdapter implements CodeHostPort {
     private HttpRequest.Builder baseRequest(String path) {
         return HttpRequest.newBuilder()
             .uri(URI.create(config.apiUrl() + path))
-            .header(HEADER_AUTHORIZATION, "Bearer " + config.token())
+            .header(HEADER_AUTHORIZATION, "Bearer " + tokenProvider.getToken())
             .header(HEADER_ACCEPT, GITHUB_ACCEPT_HEADER)
             .header(HEADER_CONTENT_TYPE, CONTENT_TYPE_JSON)
             .timeout(GITHUB_API_TIMEOUT);
@@ -478,7 +481,7 @@ public class GitHubCodeHostAdapter implements CodeHostPort {
     }
 
     private String buildGitAuthorizationHeader() {
-        String credentials = GIT_AUTH_USERNAME + ":" + config.token();
+        String credentials = GIT_AUTH_USERNAME + ":" + tokenProvider.getToken();
         String encoded = Base64.getEncoder().encodeToString(credentials.getBytes(StandardCharsets.UTF_8));
         return GIT_BASIC_AUTH_SCHEME + encoded;
     }

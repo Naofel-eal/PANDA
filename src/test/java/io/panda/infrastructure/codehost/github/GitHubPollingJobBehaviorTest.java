@@ -133,8 +133,12 @@ class GitHubPollingJobBehaviorTest {
             @Override public String commitUserName() { return "PANDA"; }
             @Override public String commitUserEmail() { return "panda@example.com"; }
             @Override public int pollIntervalMinutes() { return 1; }
+            @Override public Optional<String> appId() { return Optional.empty(); }
+            @Override public Optional<String> appPrivateKey() { return Optional.empty(); }
+            @Override public Optional<String> appInstallationId() { return Optional.empty(); }
             @Override public List<Repository> repositories() { return List.of(); }
         });
+        ReflectionTestSupport.setField(job, "tokenProvider", new GitHubPatTokenProvider(" "));
         RecordingCancelStaleRunUseCase cancelUseCase = new RecordingCancelStaleRunUseCase();
         ReflectionTestSupport.setField(job, "cancelStaleRunUseCase", cancelUseCase);
         ReflectionTestSupport.setField(job, "codeHostPort", new StubCodeHostPort());
@@ -223,6 +227,9 @@ class GitHubPollingJobBehaviorTest {
             @Override public String commitUserName() { return "PANDA"; }
             @Override public String commitUserEmail() { return "panda@example.com"; }
             @Override public int pollIntervalMinutes() { return 1; }
+            @Override public Optional<String> appId() { return Optional.empty(); }
+            @Override public Optional<String> appPrivateKey() { return Optional.empty(); }
+            @Override public Optional<String> appInstallationId() { return Optional.empty(); }
             @Override public List<Repository> repositories() {
                 return List.of(new Repository() {
                     @Override public String name() { return "acme/api"; }
@@ -230,6 +237,7 @@ class GitHubPollingJobBehaviorTest {
                 });
             }
         });
+        ReflectionTestSupport.setField(job, "tokenProvider", new GitHubPatTokenProvider("github-token"));
         ReflectionTestSupport.setField(job, "workflowHolder", workflowHolder);
         ReflectionTestSupport.setField(job, "codeHostPort", new StubCodeHostPort());
         ReflectionTestSupport.setField(job, "ticketingPort", ticketingPort);

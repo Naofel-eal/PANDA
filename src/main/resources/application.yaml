@@ -38,6 +38,9 @@ panda:
   github:
     api-url: ${GITHUB_API_URL:https://api.github.com}
     token: ${GITHUB_TOKEN:}
+    app-id: ${GITHUB_APP_ID:}
+    app-private-key: ${GITHUB_APP_PRIVATE_KEY:}
+    app-installation-id: ${GITHUB_APP_INSTALLATION_ID:}
     default-base-branch: ${GITHUB_DEFAULT_BASE_BRANCH:develop}
     commit-user-name: ${GITHUB_COMMIT_USER_NAME:PANDA Bot}
     commit-user-email: ${GITHUB_COMMIT_USER_EMAIL:panda@example.local}
