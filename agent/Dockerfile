@@ -1,7 +1,7 @@
 FROM node:22-trixie
 
 ENV HOME=/root
-ENV PATH="/root/.bun/bin:/root/.local/bin:${PATH}"
+ENV PATH="/root/.local/bin:${PATH}"
 
 WORKDIR /agent
 
@@ -11,11 +11,7 @@ RUN apt-get update \
     ripgrep \
     ca-certificates \
     curl \
-    unzip \
   && rm -rf /var/lib/apt/lists/*
-
-RUN curl -fsSL https://bun.sh/install | bash \
-  && ln -s /root/.bun/bin/bun /usr/local/bin/bun
 
 RUN npm install -g opencode-ai
 
