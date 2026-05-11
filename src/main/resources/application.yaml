@@ -20,12 +20,6 @@ panda:
     anthropic-api-key: ${ANTHROPIC_API_KEY:}
     gemini-api-key: ${GEMINI_API_KEY:}
     copilot-github-token: ${COPILOT_GITHUB_TOKEN:}
-    aws-region: ${AWS_REGION:}
-    llm-hub-client-id: ${LLM_HUB_CLIENT_ID:}
-    llm-hub-client-secret: ${LLM_HUB_CLIENT_SECRET:}
-    llm-hub-tenant-id: ${LLM_HUB_TENANT_ID:}
-    llm-hub-arn: ${LLM_HUB_ARN:}
-    llm-hub-resource: ${LLM_HUB_RESOURCE:}
   workspace:
     run-root: ${PANDA_WORKSPACE_RUN_ROOT:/workspace/runs}
   jira:

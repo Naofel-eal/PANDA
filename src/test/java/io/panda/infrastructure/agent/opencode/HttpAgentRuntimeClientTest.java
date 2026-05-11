@@ -182,36 +182,6 @@ class HttpAgentRuntimeClientTest {
             public Optional<String> copilotGithubToken() {
                 return Optional.of("gh-token");
             }
-
-            @Override
-            public Optional<String> awsRegion() {
-                return Optional.empty();
-            }
-
-            @Override
-            public Optional<String> llmHubClientId() {
-                return Optional.empty();
-            }
-
-            @Override
-            public Optional<String> llmHubClientSecret() {
-                return Optional.empty();
-            }
-
-            @Override
-            public Optional<String> llmHubTenantId() {
-                return Optional.empty();
-            }
-
-            @Override
-            public Optional<String> llmHubArn() {
-                return Optional.empty();
-            }
-
-            @Override
-            public Optional<String> llmHubResource() {
-                return Optional.empty();
-            }
         });
         JsonSupport jsonSupport = new JsonSupport();
         ReflectionTestSupport.setField(jsonSupport, "objectMapper", new ObjectMapper());
