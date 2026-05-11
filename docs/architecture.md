@@ -11,25 +11,29 @@ PANDA is a Quarkus orchestrator built with hexagonal architecture. It follows a 
 
 Jira, GitHub, and the AI runtime are all replaceable adapters behind ports.
 
-The current implementation is persistent-state-free: no database, no outbox, no durable queue. The only in-memory runtime state is the currently active `Workflow`, stored in `InMemoryWorkflowHolder`.
+The system uses file-based persistence for workflows (JSON files with atomic writes) and re-discovers external state from Jira and GitHub on every poll cycle. At most one workflow is active at a time, held in `InMemoryWorkflowHolder` and backed by `FileWorkflowRepository`.
 
 ## Runtime state model
 
 - Ticket and pull request state is re-discovered from Jira and GitHub on every poll cycle.
 - At most one workflow is active at a time.
-- The in-memory `Workflow` tracks the ticket, phase, active `agentRunId`, start time, and already published pull requests.
-- If the orchestrator restarts mid-run, the active workflow is lost and any late agent callback is ignored until a new polling trigger restarts the flow.
+- The in-memory `Workflow` tracks the ticket, phase, status, active `agentRunId`, start time, transitions, and already published pull requests.
+- Workflows are persisted to disk as JSON files via `FileWorkflowRepository` with atomic writes (write-to-temp then rename).
+- On startup, `InMemoryWorkflowHolder` rehydrates active workflows from disk, enabling recovery after orchestrator restarts.
+- Orphaned tickets (stuck in non-terminal Jira statuses without an active workflow) are recovered to "To Do" by `OrphanedTicketRecoveryJob` at startup.
 
 ## Topology
 
 ```
 orchestrator (Quarkus, Java 21)
-├── InMemoryWorkflowHolder      - holds the current Workflow
+├── InMemoryWorkflowHolder      - holds the current Workflow (backed by FileWorkflowRepository)
 ├── JiraTicketPollingJob        - polls Jira for intake and Jira-side feedback
 ├── GitHubPollingJob            - polls GitHub for merges and review feedback
 ├── DispatchAgentRunUseCase     - prepares workspace and starts agent runs
 ├── HandleAgentEventUseCase     - consumes agent lifecycle events
-└── PublishCodeChangesUseCase   - commits, pushes, and creates or reuses PRs
+├── PublishCodeChangesUseCase   - commits, pushes, and creates or reuses PRs
+├── RecoverOrphanedTicketsUseCase - recovers stuck tickets at startup
+└── CancelStaleRunUseCase       - detects and cancels timed-out runs
 
 agent runtime (Node.js + OpenCode)
 ├── HTTP server                 - POST /internal/agent-runs and cancel endpoint
@@ -67,6 +71,8 @@ Main use cases and services:
 - `HandleMergedPullRequestUseCase`
 - `HandleAgentEventUseCase`
 - `PublishCodeChangesUseCase`
+- `CancelStaleRunUseCase`
+- `RecoverOrphanedTicketsUseCase`
 - `WorkspaceLayoutService`
 - `WorkflowHolder`
 
@@ -75,6 +81,7 @@ Ports:
 - `TicketingPort`
 - `CodeHostPort`
 - `AgentRuntimePort`
+- `WorkflowRepository`
 
 ### Infrastructure layer
 
@@ -89,18 +96,19 @@ Outbound adapters:
 - `JiraTicketingAdapter`
 - `GitHubCodeHostAdapter`
 - `HttpAgentRuntimeClient`
+- `FileWorkflowRepository`
 
 ## Polling
 
 ### Jira (`JiraTicketPollingJob`)
 
 - Polls every minute by default (`JIRA_POLL_INTERVAL_MINUTES`).
-- Searches the configured epic for tickets in the configured "To Do" status.
+- Searches the configured project for tickets assigned to the PANDA service account in the configured "To Do" status.
 - Eligible tickets start an `INFORMATION_COLLECTION` run.
 - Ineligible tickets are moved to "Blocked" and receive a Jira comment listing the missing fields.
 - Tickets already blocked by an eligibility comment are skipped until a user comment or a later ticket update is detected.
 - Tickets in "Blocked" resume in `INFORMATION_COLLECTION` when a new user comment exists or the ticket changed after the last PANDA comment.
-- Tickets in "To Validate" resume in `BUSINESS_VALIDATION` using the same feedback detection rule.
+- Tickets in "To Validate" resume in `INFORMATION_COLLECTION` using the same feedback detection rule.
 - If a workflow is active, the Jira poll cycle is skipped.
 
 ### GitHub (`GitHubPollingJob`)

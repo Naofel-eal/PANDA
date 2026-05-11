@@ -87,12 +87,8 @@ flowchart TD
     blockedFeedback -- yes --> infoCollect
     blockedFeedback -- no --> ignored
 
-    validateFeedback -- yes --> businessValidation
+    validateFeedback -- yes --> infoCollect
     validateFeedback -- no --> githubPoll
-
-    businessValidation -- COMPLETED --> publishImpl
-    businessValidation -- INPUT_REQUIRED --> toBlocked
-    businessValidation -- FAILED --> toBlocked
 
     githubPoll -- review feedback --> reviewFeedback
     githubPoll -- merged PR --> merged
@@ -125,7 +121,7 @@ flowchart TD
 | In Progress | To Review | `IMPLEMENTATION`, `TECHNICAL_VALIDATION`, or `BUSINESS_VALIDATION` publishes changes successfully |
 | To Review | In Progress | GitHub review feedback starts `TECHNICAL_VALIDATION` |
 | To Review | To Validate | A PANDA pull request merge is detected |
-| To Validate | In Progress | Jira feedback starts `BUSINESS_VALIDATION` |
+| To Validate | In Progress | Jira feedback starts `INFORMATION_COLLECTION` |
 
 ## Phase chaining
 

@@ -23,7 +23,7 @@ This file lists the concrete scenarios handled by the current implementation. It
 
 ### 1. Eligible "To Do" ticket
 
-Conditions: the ticket is in the configured "To Do" status inside the configured epic, has the required fields, and at least one configured repository is available.
+Conditions: the ticket is in the configured "To Do" status in the configured project, assigned to the PANDA service account, has the required fields, and at least one configured repository is available.
 
 Flow: `JiraTicketPollingJob` loads the ticket and comments -> `StartInfoCollectionUseCase` starts a workflow in phase `INFORMATION_COLLECTION` -> `POST /internal/agent-runs` -> agent sends `RUN_STARTED` -> ticket transitions to "In Progress".
 
@@ -69,13 +69,13 @@ Flow: nothing happens.
 
 Conditions: the ticket is in "To Validate" and the latest user comment is newer than the latest PANDA comment.
 
-Flow: Jira polling resumes the workflow in phase `BUSINESS_VALIDATION`.
+Flow: Jira polling resumes the workflow in phase `INFORMATION_COLLECTION`.
 
 ### 9. To Validate ticket updated after the last PANDA comment
 
 Conditions: the ticket is in "To Validate", there is no newer user comment, but the ticket `updated` timestamp is later than the last PANDA comment plus the reassessment grace period.
 
-Flow: Jira polling resumes the workflow in phase `BUSINESS_VALIDATION`.
+Flow: Jira polling resumes the workflow in phase `INFORMATION_COLLECTION`.
 
 ### 10. To Validate ticket without new feedback
 

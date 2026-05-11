@@ -15,7 +15,7 @@
 
 PANDA is an autonomous coding orchestrator for Jira and GitHub. Drop a ticket in Jira, and an AI agent ([OpenCode](https://opencode.ai)) picks it up, reads the checked-out repositories, implements the change, opens or reuses pull requests, and follows up on review and validation feedback.
 
-There is no database and no durable queue. PANDA re-discovers Jira and GitHub state on every poll cycle and only keeps the currently active workflow in memory.
+There is no database and no durable queue. PANDA persists workflows to disk as JSON files and re-discovers Jira and GitHub state on every poll cycle.
 
 ## What the agent actually does
 
@@ -36,11 +36,15 @@ The orchestrator also handles the surrounding workflow:
 - Merged PANDA pull requests automatically move the ticket from "To Review" to "To Validate".
 - Review feedback is deduplicated by comparing comment timestamps with the latest commit on the branch.
 - Blocked and validation tickets can resume either from a new Jira comment or from a ticket update that happened after the last PANDA comment.
+- Orphaned tickets (stuck in non-terminal statuses without an active workflow) are recovered to "To Do" at startup.
 
 ## Quick start
 
+See [docs/setup.md](docs/setup.md) for step-by-step instructions.
+
 ```bash
 cp .env.example .env
+# Fill in required values (see setup guide)
 docker compose up --build
 ```
 
@@ -58,29 +62,35 @@ All configuration lives in `.env`. See [`.env.example`](.env.example) for the ca
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `JIRA_BASE_URL` | Atlassian instance URL | `https://example.atlassian.net` |
-| `JIRA_USER_EMAIL` | Jira account email | - |
-| `JIRA_API_TOKEN` | Jira API token | - |
-| `JIRA_EPIC_KEY` | Epic key to poll (for example `SCRUM-2`) | - |
+| `JIRA_API_TOKEN` | Jira API token (Bearer) | - |
+| `JIRA_PROJECT_KEY` | Jira project key to poll (e.g. `SCRUM`) | - |
+| `JIRA_SERVICE_ACCOUNT_ID` | Jira account ID used by PANDA (for comment detection) | - |
+| `JIRA_BACKLOG_STATUS` | Backlog status name | `Backlog` |
 | `JIRA_TODO_STATUS` | Intake status for new tickets | `To Do` |
 | `JIRA_IN_PROGRESS_STATUS` | Status used when an agent run starts | `In Progress` |
 | `JIRA_BLOCKED_STATUS` | Status used when the ticket needs clarification or publication fails | `Blocked` |
 | `JIRA_REVIEW_STATUS` | Status used when pull requests are ready for review | `To Review` |
 | `JIRA_VALIDATE_STATUS` | Status used after pull requests are merged | `To Validate` |
-| `JIRA_DONE_STATUS` | Final status if your Jira workflow needs it | `Done` |
+| `JIRA_DONE_STATUS` | Final status | `Done` |
 | `JIRA_POLL_INTERVAL_MINUTES` | Jira poll frequency | `1` |
 | `JIRA_POLL_MAX_RESULTS` | Jira page size per poll | `50` |
 
 ### GitHub
 
+Authentication: set `GITHUB_TOKEN` for PAT mode, or `GITHUB_APP_*` for GitHub App mode.
+
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `GITHUB_API_URL` | GitHub API base URL | `https://api.github.com` |
-| `GITHUB_TOKEN` | GitHub token used by the orchestrator for clone, fetch, push, and PR APIs | - |
+| `GITHUB_TOKEN` | Personal access token (PAT mode) | - |
+| `GITHUB_APP_ID` | GitHub App ID (App mode) | - |
+| `GITHUB_APP_PRIVATE_KEY` | GitHub App private key PEM (App mode) | - |
+| `GITHUB_APP_INSTALLATION_ID` | GitHub App installation ID (App mode) | - |
 | `GITHUB_DEFAULT_BASE_BRANCH` | Fallback base branch when a repository does not override it | `develop` |
 | `GITHUB_POLL_INTERVAL_MINUTES` | GitHub poll frequency | `1` |
 | `GITHUB_COMMIT_USER_NAME` | Git author name for orchestrator-created commits | `PANDA Bot` |
 | `GITHUB_COMMIT_USER_EMAIL` | Git author email for orchestrator-created commits | `panda@example.local` |
-| `PANDA_GITHUB_REPOSITORIES_0_NAME` | Repository slug (for example `my-org/api`) | - |
+| `PANDA_GITHUB_REPOSITORIES_0_NAME` | Repository slug (e.g. `my-org/api`) | - |
 | `PANDA_GITHUB_REPOSITORIES_0_BASE_BRANCH` | Base branch for that repository | `main` |
 
 Add more repositories with indices `1`, `2`, and so on.
@@ -93,7 +103,7 @@ PANDA sends model-provider credentials to the agent runtime per run. Configure t
 |----------|-------------|---------|
 | `AGENT_MAX_RUN_DURATION_MINUTES` | Hard timeout enforced by the agent runtime | `15` |
 | `AGENT_STALE_TIMEOUT_BUFFER_MINUTES` | Extra delay before the orchestrator cancels a stale run as backup | `5` |
-| `OPENCODE_MODEL` | Primary model (for example `github-copilot/claude-sonnet-4.6`) | - |
+| `OPENCODE_MODEL` | Primary model (e.g. `github-copilot/claude-sonnet-4.6`) | - |
 | `OPENCODE_SMALL_MODEL` | Smaller model for lighter tasks | - |
 | `COPILOT_GITHUB_TOKEN` | GitHub Copilot token for `github-copilot/*` models | - |
 | `OPENAI_API_KEY` | OpenAI API key for `openai/*` models | - |
@@ -120,6 +130,7 @@ PANDA sends model-provider credentials to the agent runtime per run. Configure t
 - The orchestrator owns Jira and GitHub credentials, prepares the shared workspace, and performs every Git publish operation.
 - The agent runtime receives only the model-provider credentials needed for the current run. It never receives Jira credentials or the orchestrator GitHub token.
 - Both containers share `/workspace/runs`, where repositories are checked out for the agent to inspect or modify locally.
+- Workflows are persisted as JSON files under the workspace root, enabling recovery after restarts.
 
 ## Security
 
@@ -147,6 +158,7 @@ The runtime also blocks common direct network helpers such as `curl`, `wget`, an
 - Published branches must start with `panda/`.
 - The agent is instructed not to start applications and to limit validations to compile, lint, and test commands.
 - The runtime enforces a hard timeout, then the orchestrator applies stale-run cancellation as a backup.
+- Zombie runs from previous executions are detected and force-killed on startup.
 
 ### Request validation
 
@@ -154,6 +166,7 @@ Incoming agent events are validated with Bean Validation (`@Valid`, `@NotNull`, 
 
 ## Detailed documentation
 
+- [Setup guide](docs/setup.md) - step-by-step installation and configuration
 - [Architecture](docs/architecture.md) - hexagonal design, workflow holder, polling, timeout and security boundaries
 - [Workflow](docs/workflow.md) - end-to-end flow diagram and Jira transitions
 - [Scenarios](docs/scenarios.md) - concrete scenarios handled by the current implementation
