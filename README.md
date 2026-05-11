@@ -132,6 +132,28 @@ PANDA sends model-provider credentials to the agent runtime per run. Configure t
 - Both containers share `/workspace/runs`, where repositories are checked out for the agent to inspect or modify locally.
 - Workflows are persisted as JSON files under the workspace root, enabling recovery after restarts.
 
+## Workflow State Machine
+
+```mermaid
+stateDiagram-v2
+    [*] --> INFO_COLLECTION : Ticket To Do
+
+    INFO_COLLECTION --> IMPLEMENTATION : agent completes analysis
+    IMPLEMENTATION --> TO_REVIEW : PR created on GitHub
+
+    TO_REVIEW --> TECHNICAL_VALIDATION : review comments detected
+    TECHNICAL_VALIDATION --> TO_REVIEW : agent pushes fix
+
+    TO_REVIEW --> DONE : PR merged
+
+    INFO_COLLECTION --> BLOCKED : failure or missing info
+    IMPLEMENTATION --> BLOCKED : failure
+    BLOCKED --> INFO_COLLECTION : user adds comment
+    BLOCKED --> IMPLEMENTATION : user adds comment
+
+    DONE --> [*]
+```
+
 ## Security
 
 PANDA runs an AI agent with shell access, so the architecture is built around one rule: the agent never handles business-system secrets directly.
@@ -168,6 +190,7 @@ Incoming agent events are validated with Bean Validation (`@Valid`, `@NotNull`, 
 
 - [Setup guide](docs/setup.md) - step-by-step installation and configuration
 - [Architecture](docs/architecture.md) - hexagonal design, workflow holder, polling, timeout and security boundaries
+- [Architecture diagrams](docs/architecture-diagrams.md) - Mermaid diagrams: system, sequence, auth, timeouts
 - [Workflow](docs/workflow.md) - end-to-end flow diagram and Jira transitions
 - [Scenarios](docs/scenarios.md) - concrete scenarios handled by the current implementation
 - [Agent callbacks](docs/agent-callbacks.md) - HTTP contract between the agent runtime and the orchestrator
