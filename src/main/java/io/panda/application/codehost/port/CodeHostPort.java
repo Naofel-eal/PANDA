@@ -2,6 +2,7 @@ package io.panda.application.codehost.port;
 
 import io.panda.application.command.codehost.PublishCodeChangesCommand;
 import io.panda.application.command.workspace.PrepareWorkspaceCommand;
+import io.panda.application.command.workspace.ResetWorkspaceCommand;
 import io.panda.domain.model.codehost.CodeChangeRef;
 import io.panda.domain.model.workspace.PreparedWorkspace;
 import java.util.List;
@@ -13,4 +14,6 @@ public interface CodeHostPort {
     List<String> configuredRepositories();
 
     PreparedWorkspace prepareWorkspace(PrepareWorkspaceCommand command);
+
+    void resetWorkspace(ResetWorkspaceCommand command);
 }
