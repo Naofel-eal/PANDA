@@ -9,7 +9,7 @@ repositories {
 }
 
 group = 'io.panda'
-version = '0.1.0-SNAPSHOT'
+version = file('.version').exists() ? file('.version').text.trim() : '0.0.0-SNAPSHOT'
 
 java {
     toolchain {
