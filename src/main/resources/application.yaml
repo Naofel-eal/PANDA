@@ -24,9 +24,10 @@ panda:
     run-root: ${PANDA_WORKSPACE_RUN_ROOT:/workspace/runs}
   jira:
     base-url: ${JIRA_BASE_URL:https://example.atlassian.net}
-    user-email: ${JIRA_USER_EMAIL:}
     api-token: ${JIRA_API_TOKEN:}
-    epic-key: ${JIRA_EPIC_KEY:}
+    project-key: ${JIRA_PROJECT_KEY:}
+    service-account-id: ${JIRA_SERVICE_ACCOUNT_ID:}
+    backlog-status: ${JIRA_BACKLOG_STATUS:Backlog}
     todo-status: ${JIRA_TODO_STATUS:To Do}
     in-progress-status: ${JIRA_IN_PROGRESS_STATUS:In Progress}
     blocked-status: ${JIRA_BLOCKED_STATUS:Blocked}
