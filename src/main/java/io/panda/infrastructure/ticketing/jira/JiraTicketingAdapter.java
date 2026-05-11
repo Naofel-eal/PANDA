@@ -8,6 +8,7 @@ import io.panda.domain.exception.DomainException;
 import io.panda.domain.model.ticketing.IncomingComment;
 import io.panda.domain.model.ticketing.WorkItem;
 import io.panda.domain.model.ticketing.WorkItemTransitionTarget;
+import io.panda.infrastructure.support.HttpRetry;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.io.IOException;
@@ -15,10 +16,8 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
-import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -38,7 +37,6 @@ public class JiraTicketingAdapter implements TicketingPort {
     private static final String HEADER_ACCEPT = "Accept";
     private static final String HEADER_CONTENT_TYPE = "Content-Type";
     private static final String CONTENT_TYPE_JSON = "application/json";
-    private static final String AUTH_SCHEME_BASIC = "Basic ";
     private static final String API_ISSUE_PATH_TEMPLATE = "/rest/api/3/issue/%s";
     private static final String API_COMMENT_PATH_TEMPLATE = "/rest/api/3/issue/%s/comment";
     private static final String API_TRANSITIONS_PATH_TEMPLATE = "/rest/api/3/issue/%s/transitions";
@@ -82,13 +80,11 @@ public class JiraTicketingAdapter implements TicketingPort {
         }
 
         LOG.infof("Posting Jira comment on ticket %s", command.workItemKey());
-        String credentials = config.userEmail() + ":" + config.apiToken();
-        String auth = Base64.getEncoder().encodeToString(credentials.getBytes(StandardCharsets.UTF_8));
         String payload = jsonCodec.toJson(buildCommentPayload(command.comment()));
 
         HttpRequest request = HttpRequest.newBuilder()
             .uri(URI.create(config.baseUrl() + API_COMMENT_PATH_TEMPLATE.formatted(command.workItemKey())))
-            .header(HEADER_AUTHORIZATION, AUTH_SCHEME_BASIC + auth)
+            .header(HEADER_AUTHORIZATION, "Bearer " + config.apiToken())
             .header(HEADER_ACCEPT, CONTENT_TYPE_JSON)
             .header(HEADER_CONTENT_TYPE, CONTENT_TYPE_JSON)
             .timeout(HTTP_TIMEOUT)
@@ -96,7 +92,7 @@ public class JiraTicketingAdapter implements TicketingPort {
             .build();
 
         try {
-            HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+            HttpResponse<String> response = HttpRetry.send(client, request);
             if (response.statusCode() >= 400) {
                 throw new DomainException("Jira comment failed: HTTP " + response.statusCode() + " - " + response.body());
             }
@@ -176,6 +172,16 @@ public class JiraTicketingAdapter implements TicketingPort {
         return comments;
     }
 
+    @Override
+    public boolean isTerminalStatus(String status) {
+        return config.doneStatus().equalsIgnoreCase(status);
+    }
+
+    @Override
+    public void claimWorkItem(String workItemSystem, String workItemKey) {
+        LOG.debugf("claimWorkItem not implemented for Jira in personal version");
+    }
+
     private String currentStatus(String workItemKey) {
         HttpRequest request = baseRequest(API_ISSUE_PATH_TEMPLATE.formatted(workItemKey) + QUERY_FIELDS_STATUS)
             .GET()
@@ -219,6 +225,7 @@ public class JiraTicketingAdapter implements TicketingPort {
 
     private String resolveTargetStatus(WorkItemTransitionTarget target) {
         return switch (target) {
+            case TODO -> config.todoStatus();
             case IN_PROGRESS -> config.inProgressStatus();
             case BLOCKED -> config.blockedStatus();
             case TO_REVIEW -> config.reviewStatus();
@@ -248,14 +255,14 @@ public class JiraTicketingAdapter implements TicketingPort {
     private HttpRequest.Builder baseRequest(String path) {
         return HttpRequest.newBuilder()
             .uri(URI.create(config.baseUrl() + path))
-            .header(HEADER_AUTHORIZATION, AUTH_SCHEME_BASIC + encodedCredentials())
+            .header(HEADER_AUTHORIZATION, "Bearer " + config.apiToken())
             .header(HEADER_ACCEPT, CONTENT_TYPE_JSON)
             .timeout(HTTP_TIMEOUT);
     }
 
     private Map<String, Object> sendJson(HttpRequest request, String failureMessage) {
         try {
-            HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+            HttpResponse<String> response = HttpRetry.send(client, request);
             if (response.statusCode() >= 400) {
                 throw new DomainException(failureMessage + ": HTTP " + response.statusCode() + " - " + response.body());
             }
@@ -270,7 +277,7 @@ public class JiraTicketingAdapter implements TicketingPort {
 
     private void send(HttpRequest request, String failureMessage) {
         try {
-            HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+            HttpResponse<String> response = HttpRetry.send(client, request);
             if (response.statusCode() >= 400) {
                 throw new DomainException(failureMessage + ": HTTP " + response.statusCode() + " - " + response.body());
             }
@@ -280,11 +287,6 @@ public class JiraTicketingAdapter implements TicketingPort {
             Thread.currentThread().interrupt();
             throw new DomainException(failureMessage, exception);
         }
-    }
-
-    private String encodedCredentials() {
-        String credentials = config.userEmail() + ":" + config.apiToken();
-        return Base64.getEncoder().encodeToString(credentials.getBytes(StandardCharsets.UTF_8));
     }
 
     private Map<String, Object> buildCommentPayload(String comment) {
