@@ -1,9 +1,11 @@
 package io.panda.application.agent.event;
 
 import io.panda.application.agent.dispatch.DispatchAgentRunUseCase;
+import io.panda.application.codehost.port.CodeHostPort;
 import io.panda.application.codehost.publish.PublishCodeChangesUseCase;
 import io.panda.application.command.ticketing.CommentWorkItemCommand;
 import io.panda.application.command.ticketing.TransitionWorkItemCommand;
+import io.panda.application.command.workspace.ResetWorkspaceCommand;
 import io.panda.application.ticketing.port.TicketingPort;
 import io.panda.application.workflow.port.WorkflowHolder;
 import io.panda.domain.model.agent.AgentEvent;
@@ -18,20 +20,21 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.CompletableFuture;
 import org.jboss.logging.Logger;
 
 @ApplicationScoped
 public class HandleAgentEventUseCase {
 
     private static final Logger LOG = Logger.getLogger(HandleAgentEventUseCase.class);
-    private static final int CHAIN_DISPATCH_DELAY_MS = 3_000;
 
     @Inject
     WorkflowHolder workflowHolder;
 
     @Inject
     TicketingPort ticketingPort;
+
+    @Inject
+    CodeHostPort codeHostPort;
 
     @Inject
     DispatchAgentRunUseCase dispatchAgentRunUseCase;
@@ -53,6 +56,13 @@ public class HandleAgentEventUseCase {
             return false;
         }
 
+        if (isTicketInTerminalStatus(workflow)) {
+            LOG.infof("Ticket %s is already in a terminal status (Done); abandoning workflow and ignoring event %s",
+                workflow.ticketKey(), event.eventId());
+            workflowHolder.clear();
+            return false;
+        }
+
         LOG.infof(
             "Received agent event %s of type %s for ticket %s in phase %s",
             event.eventId(), event.type(), workflow.ticketKey(), workflow.phase()
@@ -67,6 +77,16 @@ public class HandleAgentEventUseCase {
             case CANCELLED -> handleCancelled(workflow);
         }
         return true;
+    }
+
+    private boolean isTicketInTerminalStatus(Workflow workflow) {
+        try {
+            return ticketingPort.isTerminalStatus(workflow.ticketSystem(), workflow.ticketKey());
+        } catch (RuntimeException e) {
+            LOG.warnf(e, "Unable to check terminal status for ticket %s; proceeding with event handling",
+                workflow.ticketKey());
+            return false;
+        }
     }
 
     private void handleRunStarted(Workflow workflow) {
@@ -91,6 +111,7 @@ public class HandleAgentEventUseCase {
             postComment(workflow, comment, reasonCode);
         }
         workflowHolder.clear();
+        resetWorkspaceSafely(workflow);
     }
 
     private void handleCompleted(Workflow workflow, AgentEvent event) {
@@ -98,7 +119,14 @@ public class HandleAgentEventUseCase {
             workflow.agentRunId(), workflow.ticketKey(), workflow.phase());
 
         if (workflow.phase() == WorkflowPhase.INFORMATION_COLLECTION) {
-            chainToImplementation(workflow, event);
+            if (AgentEvent.REASON_ALREADY_IMPLEMENTED.equalsIgnoreCase(event.reasonCode())) {
+                LOG.infof("Ticket %s is already implemented — transitioning to validation", workflow.ticketKey());
+                moveTicket(workflow, WorkItemTransitionTarget.TO_VALIDATE, AgentEvent.REASON_ALREADY_IMPLEMENTED);
+                postComment(workflow, event.summary(), AgentEvent.REASON_ALREADY_IMPLEMENTED);
+                workflowHolder.clear();
+            } else {
+                chainToImplementation(workflow, event);
+            }
         } else if (workflow.phase() == WorkflowPhase.IMPLEMENTATION
             || workflow.phase() == WorkflowPhase.BUSINESS_VALIDATION) {
             publishCodeChangesUseCase.execute(workflow, event, false);
@@ -111,18 +139,21 @@ public class HandleAgentEventUseCase {
 
     private void handleFailed(Workflow workflow, AgentEvent event) {
         String reasonCode = event.normalizedReasonCode(workflow.phase());
-        LOG.warnf("Agent run %s failed for ticket %s: %s",
-            workflow.agentRunId(), workflow.ticketKey(), reasonCode);
+        LOG.warnf("Agent run %s failed for ticket %s: %s — summary: %s",
+            workflow.agentRunId(), workflow.ticketKey(), reasonCode,
+            event.summary() != null ? event.summary().substring(0, Math.min(event.summary().length(), 200)) : "null");
 
         moveTicket(workflow, WorkItemTransitionTarget.BLOCKED, reasonCode);
         postComment(workflow, event.buildFailureComment(), reasonCode);
         workflowHolder.clear();
+        resetWorkspaceSafely(workflow);
     }
 
     private void handleCancelled(Workflow workflow) {
         LOG.infof("Agent run %s cancelled for ticket %s",
             workflow.agentRunId(), workflow.ticketKey());
         workflowHolder.clear();
+        resetWorkspaceSafely(workflow);
     }
 
     private void chainToImplementation(Workflow workflow, AgentEvent event) {
@@ -133,22 +164,14 @@ public class HandleAgentEventUseCase {
         Map<String, Object> snapshot = buildChainSnapshot(nextWorkflow, event);
         String objective = "Implement work item " + workflow.ticketKey();
 
-        CompletableFuture.runAsync(() -> {
-            try {
-                Thread.sleep(CHAIN_DISPATCH_DELAY_MS);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                LOG.errorf("Chain dispatch interrupted for ticket %s", workflow.ticketKey());
-                handleChainFailure(workflow, new RuntimeException("Interrupted while waiting to dispatch implementation", e));
-                return;
-            }
-            try {
-                dispatchAgentRunUseCase.execute(nextWorkflow, objective, snapshot);
-            } catch (RuntimeException e) {
-                LOG.errorf(e, "Failed to dispatch implementation phase for ticket %s", workflow.ticketKey());
-                handleChainFailure(workflow, e);
-            }
-        });
+        try {
+            dispatchAgentRunUseCase.execute(nextWorkflow, objective, snapshot);
+            LOG.infof("Chained to implementation phase for ticket %s, new agentRunId=%s",
+                workflow.ticketKey(), newAgentRunId);
+        } catch (RuntimeException e) {
+            LOG.errorf(e, "Failed to dispatch implementation phase for ticket %s", workflow.ticketKey());
+            handleChainFailure(workflow, e);
+        }
     }
 
     private void handleChainFailure(Workflow workflow, RuntimeException cause) {
@@ -160,6 +183,15 @@ public class HandleAgentEventUseCase {
                 + "\n\nPANDA marked this ticket as blocked until the issue is resolved.",
             "CHAIN_DISPATCH_FAILED"
         );
+    }
+
+    private void resetWorkspaceSafely(Workflow workflow) {
+        try {
+            codeHostPort.resetWorkspace(new ResetWorkspaceCommand(workflow.workflowId()));
+        } catch (RuntimeException e) {
+            LOG.warnf(e, "Failed to reset workspace for workflow %s (ticket %s); will be cleaned on next prepare",
+                workflow.workflowId(), workflow.ticketKey());
+        }
     }
 
     private Map<String, Object> buildChainSnapshot(Workflow workflow, AgentEvent event) {
