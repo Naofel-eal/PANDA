@@ -22,11 +22,9 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.nio.charset.StandardCharsets;
 import java.util.Comparator;
 import java.time.Duration;
 import java.time.Instant;
-import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -42,7 +40,6 @@ public class JiraTicketPollingJob {
     private static final Duration HTTP_TIMEOUT = Duration.ofSeconds(20);
     private static final Duration HTTP_CONNECT_TIMEOUT = Duration.ofSeconds(5);
     private static final String SEARCH_ISSUES_PATH = "/rest/api/3/search/jql";
-    private static final String MYSELF_PATH = "/rest/api/3/myself";
     private static final String PANDA_NOT_ELIGIBLE_MARKER = "PANDA marked this ticket as blocked because it is missing:";
     private static final String PANDA_COMMENT_MARKER = "PANDA marked this ticket as blocked";
     private static final String PANDA_READY_FOR_VALIDATION_MARKER = "Pull request merged and ready for validation.";
@@ -82,7 +79,7 @@ public class JiraTicketPollingJob {
             pollTicketsWaitingForComment(config.blockedStatus(), WorkflowPhase.INFORMATION_COLLECTION);
         }
         if (!workflowHolder.isBusy()) {
-            pollTicketsWaitingForComment(config.validateStatus(), WorkflowPhase.BUSINESS_VALIDATION);
+            pollTicketsWaitingForComment(config.validateStatus(), WorkflowPhase.INFORMATION_COLLECTION);
         }
     }
 
@@ -140,7 +137,7 @@ public class JiraTicketPollingJob {
         }
     }
 
-    private boolean tryResumeTicket(Map<String, Object> issue, WorkflowPhase phase, String status) {
+    private boolean tryResumeTicket(Map<String, Object> issue, WorkflowPhase phase, String expectedStatus) {
         WorkItem workItem = jiraPayloadMapper.toWorkItem(issue);
         List<IncomingComment> comments = safeLoadComments(workItem.key());
 
@@ -151,8 +148,15 @@ public class JiraTicketPollingJob {
             return false;
         }
 
+        // Re-verify current status before resuming
+        WorkItem freshTicket = safeLoadWorkItem(JiraSystem.ID, workItem.key());
+        if (freshTicket != null && !expectedStatus.equalsIgnoreCase(freshTicket.status())) {
+            LOG.infof("Ticket %s status changed to %s since poll started; skipping resume", workItem.key(), freshTicket.status());
+            return false;
+        }
+
         String reason = hasNewComment ? "new user comment detected" : "ticket updated after last PANDA comment";
-        LOG.infof("Resuming ticket %s from status '%s' — %s", workItem.key(), status, reason);
+        LOG.infof("Resuming ticket %s from status '%s' — %s", workItem.key(), expectedStatus, reason);
         resumeWorkflowUseCase.execute(JiraSystem.ID, workItem, comments, phase);
         return true;
     }
@@ -209,15 +213,14 @@ public class JiraTicketPollingJob {
 
     private boolean isPANDAComment(IncomingComment comment) {
         if (comment == null || comment.body() == null) return false;
-        boolean hasMarker = comment.body().contains(PANDA_COMMENT_MARKER)
-            || comment.body().contains(PANDA_NOT_ELIGIBLE_MARKER)
-            || comment.body().contains(PANDA_READY_FOR_VALIDATION_MARKER);
-        if (pandaAccountId != null) {
-            // Require both: posted by PANDA account AND contains a PANDA marker.
-            // This avoids false positives when the user and PANDA share the same account.
-            return pandaAccountId.equals(comment.authorId()) && hasMarker;
+        String authorId = comment.authorId();
+        if (pandaAccountId != null && !pandaAccountId.isBlank()) {
+            if (pandaAccountId.equals(authorId)) {
+                return true;
+            }
         }
-        return hasMarker;
+        String body = comment.body();
+        return body != null && body.contains("[PANDA");
     }
 
     private boolean isPANDAEligibilityComment(IncomingComment comment) {
@@ -232,31 +235,16 @@ public class JiraTicketPollingJob {
     // --- Jira HTTP ---
 
     private void resolvePANDAAccountId() {
-        if (pandaAccountId != null) return;
-        HttpRequest request = HttpRequest.newBuilder()
-            .uri(URI.create(config.baseUrl() + MYSELF_PATH))
-            .header("Authorization", "Basic " + encodedCredentials())
-            .header("Accept", "application/json")
-            .timeout(HTTP_TIMEOUT).GET().build();
-        try {
-            HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
-            if (response.statusCode() >= 400) return;
-            Map<String, Object> body = objectMapper.readValue(response.body(), MAP_TYPE);
-            Object accountId = body.get("accountId");
-            if (accountId instanceof String id && !id.isBlank()) {
-                pandaAccountId = id;
-                LOG.infof("Resolved PANDA Jira account ID: %s", pandaAccountId);
-            }
-        } catch (IOException | InterruptedException e) {
-            if (e instanceof InterruptedException) Thread.currentThread().interrupt();
-            LOG.warnf("Unable to resolve PANDA account ID from Jira");
-        }
+        config.serviceAccountId().filter(id -> !id.isBlank()).ifPresent(id -> {
+            this.pandaAccountId = id;
+            LOG.infof("PANDA account ID from config: %s", id);
+        });
     }
 
     private Map<String, Object> fetchIssuesPage(String status, String nextPageToken) {
         var node = objectMapper.createObjectNode();
-        node.put("jql", "parent = \"%s\" AND status = \"%s\"".formatted(
-            escapeJql(config.epicKey()), escapeJql(status)));
+        node.put("jql", "project = \"%s\" AND assignee = \"%s\" AND status = \"%s\"".formatted(
+            escapeJql(config.projectKey()), escapeJql(pandaAccountId != null ? pandaAccountId : ""), escapeJql(status)));
         node.put("maxResults", config.pollMaxResults());
         node.putArray("fields").add("summary").add("description").add("status")
             .add("issuetype").add("labels").add("updated");
@@ -265,7 +253,7 @@ public class JiraTicketPollingJob {
         }
         HttpRequest request = HttpRequest.newBuilder()
             .uri(URI.create(config.baseUrl() + SEARCH_ISSUES_PATH))
-            .header("Authorization", "Basic " + encodedCredentials())
+            .header("Authorization", "Bearer " + config.apiToken())
             .header("Accept", "application/json")
             .header("Content-Type", "application/json")
             .timeout(HTTP_TIMEOUT)
@@ -293,6 +281,15 @@ public class JiraTicketPollingJob {
         }
     }
 
+    private WorkItem safeLoadWorkItem(String workItemSystem, String workItemKey) {
+        try {
+            return ticketingPort.loadWorkItem(workItemSystem, workItemKey).orElse(null);
+        } catch (RuntimeException e) {
+            LOG.warnf(e, "Unable to load Jira work item %s", workItemKey);
+            return null;
+        }
+    }
+
     private void postTicketComment(String ticketKey, String comment) {
         try {
             ticketingPort.comment(new CommentWorkItemCommand(JiraSystem.ID, ticketKey, comment, "ELIGIBILITY_CHECK"));
@@ -313,14 +310,9 @@ public class JiraTicketPollingJob {
         return value == null ? "" : value.replace("\\", "\\\\").replace("\"", "\\\"");
     }
 
-    private String encodedCredentials() {
-        return Base64.getEncoder().encodeToString(
-            (config.userEmail() + ":" + config.apiToken()).getBytes(StandardCharsets.UTF_8));
-    }
-
     private boolean isPollingConfigured() {
-        return !isBlank(config.baseUrl()) && !isBlank(config.userEmail())
-            && !isBlank(config.apiToken()) && !isBlank(config.epicKey());
+        return !isBlank(config.baseUrl()) && !isBlank(config.apiToken())
+            && config.serviceAccountId().filter(id -> !id.isBlank()).isPresent();
     }
 
     private long effectiveStaleRunDurationMinutes() {
