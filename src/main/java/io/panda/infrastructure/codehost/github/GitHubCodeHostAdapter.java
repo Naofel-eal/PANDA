@@ -2,7 +2,9 @@ package io.panda.infrastructure.codehost.github;
 
 import io.panda.application.command.codehost.PublishCodeChangesCommand;
 import io.panda.application.command.workspace.PrepareWorkspaceCommand;
+import io.panda.application.command.workspace.ResetWorkspaceCommand;
 import io.panda.application.codehost.port.CodeHostPort;
+import io.panda.infrastructure.support.HttpRetry;
 import io.panda.application.support.port.JsonCodec;
 import io.panda.application.service.WorkspaceLayoutService;
 import io.panda.domain.exception.DomainException;
@@ -85,6 +87,8 @@ public class GitHubCodeHostAdapter implements CodeHostPort {
             }
 
             String baseBranchForCheck = resolveBaseBranch(repository);
+            fetchOriginSafely(repoPath);
+            rebaseOnBaseBranch(repoPath, baseBranchForCheck);
             String status = runGit(repoPath, List.of("status", "--porcelain"));
             String aheadLog = runGit(repoPath, List.of("log", "origin/" + baseBranchForCheck + "..HEAD", "--oneline"));
             if (status.isBlank() && aheadLog.isBlank()) {
@@ -230,6 +234,17 @@ public class GitHubCodeHostAdapter implements CodeHostPort {
         );
     }
 
+    @Override
+    public void resetWorkspace(ResetWorkspaceCommand command) {
+        List<String> repositories = configuredRepositories();
+        for (String repository : repositories) {
+            Path repoPath = workspaceLayoutService.repositoryDirectory(command.workflowId(), repository);
+            if (Files.exists(repoPath.resolve(".git"))) {
+                cleanupWorkspace(repoPath, resolveBaseBranch(repository));
+            }
+        }
+    }
+
     @SuppressWarnings("unchecked")
     private Map<String, RepoPublishInstructions> extractRepoInstructions(PublishCodeChangesCommand command) {
         Map<String, Object> artifacts = command.artifacts();
@@ -299,7 +314,7 @@ public class GitHubCodeHostAdapter implements CodeHostPort {
             .build();
 
         try {
-            HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+            HttpResponse<String> response = HttpRetry.send(client, request);
             if (response.statusCode() >= 400) {
                 throw new DomainException("Unable to query pull requests: HTTP " + response.statusCode() + " - " + response.body());
             }
@@ -328,7 +343,7 @@ public class GitHubCodeHostAdapter implements CodeHostPort {
             .build();
 
         try {
-            HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+            HttpResponse<String> response = HttpRetry.send(client, request);
             if (response.statusCode() >= 400) {
                 throw new DomainException("Unable to create pull request: HTTP " + response.statusCode() + " - " + response.body());
             }
@@ -375,7 +390,7 @@ public class GitHubCodeHostAdapter implements CodeHostPort {
         } else {
             runGit(workspace, List.of("checkout", "-B", targetBranch, "origin/" + baseBranch));
         }
-        runGit(workspace, List.of("clean", "-fd"));
+        runGit(workspace, List.of("clean", "-fdx"));
     }
 
     private void cleanupWorkspace(Path workspace, String baseBranch) {
@@ -383,7 +398,45 @@ public class GitHubCodeHostAdapter implements CodeHostPort {
         runGit(workspace, List.of("fetch", "origin"));
         runGit(workspace, List.of("checkout", "-B", baseBranch, "origin/" + baseBranch));
         runGit(workspace, List.of("reset", "--hard", "origin/" + baseBranch));
-        runGit(workspace, List.of("clean", "-fd"));
+        runGit(workspace, List.of("clean", "-fdx"));
+        deleteLocalPandaBranches(workspace);
+    }
+
+    private void deleteLocalPandaBranches(Path workspace) {
+        try {
+            String branchList = runGit(workspace, List.of("branch", "--list", BRANCH_PREFIX + "*"));
+            for (String line : branchList.split("\n")) {
+                String branch = line.trim().replaceFirst("^\\* ", "");
+                if (branch.startsWith(BRANCH_PREFIX)) {
+                    runGit(workspace, List.of("branch", "-D", branch));
+                    LOG.debugf("Deleted local panda branch: %s", branch);
+                }
+            }
+        } catch (DomainException e) {
+            LOG.debugf("No local panda branches to clean: %s", e.getMessage());
+        }
+    }
+
+    private void fetchOriginSafely(Path workspace) {
+        try {
+            runGit(workspace, List.of("fetch", "origin"));
+        } catch (DomainException e) {
+            LOG.warnf("Failed to fetch origin in %s: %s", workspace, e.getMessage());
+        }
+    }
+
+    private boolean rebaseOnBaseBranch(Path workspace, String baseBranch) {
+        try {
+            runGit(workspace, List.of("rebase", "origin/" + baseBranch));
+            return true;
+        } catch (DomainException e) {
+            LOG.warnf("Rebase on %s failed, aborting: %s", baseBranch, e.getMessage());
+            try {
+                runGit(workspace, List.of("rebase", "--abort"));
+            } catch (DomainException ignored) {
+            }
+            return false;
+        }
     }
 
     private boolean hasRemoteBranch(Path workspace, String branch) {
