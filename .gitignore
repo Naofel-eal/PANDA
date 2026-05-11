@@ -6,9 +6,14 @@ bin/
 .classpath
 .settings/
 .DS_Store
+node_modules/
 agent/node_modules/
 agent/.npm/
 agent/.cache/
 agent-state/
 .env
 *.log
+
+!gradle/wrapper/gradle-wrapper.jar
+!**/src/main/**/build/
+!**/src/test/**/build/
