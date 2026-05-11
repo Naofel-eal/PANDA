@@ -29,12 +29,14 @@ public class CancelStaleRunUseCase {
         if (stale == null) {
             return;
         }
+        Duration elapsed = Duration.between(stale.startedAt(), java.time.Instant.now());
         LOG.warnf(
-            "Run %s for ticket %s has been active for more than %d minutes — cancelling",
-            stale.agentRunId(), stale.ticketKey(), maxDurationMinutes
+            "Run %s for ticket %s has been active for %d minutes (threshold=%d) in phase %s — cancelling",
+            stale.agentRunId(), stale.ticketKey(), elapsed.toMinutes(), maxDurationMinutes, stale.phase()
         );
         try {
             agentRuntimePort.cancelRun(new CancelAgentRunCommand(stale.agentRunId()));
+            LOG.infof("Cancel command sent to agent runtime for run %s", stale.agentRunId());
         } catch (RuntimeException e) {
             LOG.warnf(e, "Failed to cancel stale agent run %s — clearing locally", stale.agentRunId());
         }
