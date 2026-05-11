@@ -28,6 +28,6 @@ public class GitHubTokenProviderFactory {
             );
         }
         LOG.info("GitHub authentication mode: Personal Access Token");
-        return new GitHubPatTokenProvider(config.token());
+        return new GitHubPatTokenProvider(config.token().orElse(""));
     }
 }

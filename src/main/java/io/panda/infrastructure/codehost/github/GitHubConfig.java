@@ -9,7 +9,7 @@ public interface GitHubConfig {
 
     String apiUrl();
 
-    String token();
+    Optional<String> token();
 
     String defaultBaseBranch();
 
