@@ -40,7 +40,7 @@ class JiraTicketingAdapterTest {
             var request = server.lastRequest();
             assertEquals("POST", request.method());
             assertEquals("/rest/api/3/issue/SCRUM-30/comment", request.path());
-            assertTrue(request.header("Authorization").startsWith("Basic "));
+            assertTrue(request.header("Authorization").startsWith("Bearer "));
             assertTrue(request.body().contains("\"type\":\"doc\""));
             assertTrue(request.body().contains("\"heading\""));
             assertTrue(request.body().contains("\"bulletList\""));
@@ -368,18 +368,28 @@ class JiraTicketingAdapterTest {
             }
 
             @Override
-            public String userEmail() {
-                return "panda@example.com";
-            }
-
-            @Override
             public String apiToken() {
                 return "jira-token";
             }
 
             @Override
-            public String epicKey() {
+            public String projectKey() {
                 return "SCRUM";
+            }
+
+            @Override
+            public Optional<String> serviceAccountId() {
+                return Optional.empty();
+            }
+
+            @Override
+            public String backlogStatus() {
+                return "Backlog";
+            }
+
+            @Override
+            public String sprintField() {
+                return "customfield_10020";
             }
 
             @Override
@@ -433,9 +443,11 @@ class JiraTicketingAdapterTest {
         JiraPayloadMapper mapper = new JiraPayloadMapper();
         ReflectionTestSupport.setField(mapper, "jiraConfig", new JiraConfig() {
             @Override public String baseUrl() { return baseUrl; }
-            @Override public String userEmail() { return "panda@example.com"; }
             @Override public String apiToken() { return "jira-token"; }
-            @Override public String epicKey() { return "SCRUM"; }
+            @Override public String projectKey() { return "SCRUM"; }
+            @Override public Optional<String> serviceAccountId() { return Optional.empty(); }
+            @Override public String backlogStatus() { return "Backlog"; }
+            @Override public String sprintField() { return "customfield_10020"; }
             @Override public String todoStatus() { return "To Do"; }
             @Override public String inProgressStatus() { return "In Progress"; }
             @Override public String blockedStatus() { return "Blocked"; }

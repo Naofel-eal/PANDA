@@ -187,7 +187,7 @@ class JiraTicketPollingJobBehaviorTest {
             job.pollEpicTickets();
 
             assertEquals("SCRUM-73", resumeUseCase.workItem.key());
-            assertEquals(WorkflowPhase.BUSINESS_VALIDATION, resumeUseCase.phase);
+            assertEquals(WorkflowPhase.INFORMATION_COLLECTION, resumeUseCase.phase);
         }
     }
 
@@ -197,9 +197,11 @@ class JiraTicketPollingJobBehaviorTest {
         JiraTicketPollingJob job = new JiraTicketPollingJob();
         ReflectionTestSupport.setField(job, "config", new JiraConfig() {
             @Override public String baseUrl() { return ""; }
-            @Override public String userEmail() { return ""; }
             @Override public String apiToken() { return ""; }
-            @Override public String epicKey() { return ""; }
+            @Override public String projectKey() { return "SCRUM"; }
+            @Override public Optional<String> serviceAccountId() { return Optional.empty(); }
+            @Override public String backlogStatus() { return "Backlog"; }
+            @Override public String sprintField() { return "customfield_10020"; }
             @Override public String todoStatus() { return "To Do"; }
             @Override public String inProgressStatus() { return "In Progress"; }
             @Override public String blockedStatus() { return "Blocked"; }
@@ -417,9 +419,11 @@ class JiraTicketPollingJobBehaviorTest {
         JiraTicketPollingJob job = new JiraTicketPollingJob();
         JiraConfig config = new JiraConfig() {
             @Override public String baseUrl() { return baseUrl; }
-            @Override public String userEmail() { return "panda@example.com"; }
             @Override public String apiToken() { return "jira-token"; }
-            @Override public String epicKey() { return "SCRUM"; }
+            @Override public String projectKey() { return "SCRUM"; }
+            @Override public Optional<String> serviceAccountId() { return Optional.of("panda-account"); }
+            @Override public String backlogStatus() { return "Backlog"; }
+            @Override public String sprintField() { return "customfield_10020"; }
             @Override public String todoStatus() { return "To Do"; }
             @Override public String inProgressStatus() { return "In Progress"; }
             @Override public String blockedStatus() { return "Blocked"; }

@@ -10,6 +10,7 @@ import io.panda.support.ReflectionTestSupport;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -162,18 +163,28 @@ class JiraPayloadMapperTest {
             }
 
             @Override
-            public String userEmail() {
-                return "panda@example.com";
-            }
-
-            @Override
             public String apiToken() {
                 return "token";
             }
 
             @Override
-            public String epicKey() {
+            public String projectKey() {
                 return "SCRUM";
+            }
+
+            @Override
+            public Optional<String> serviceAccountId() {
+                return Optional.empty();
+            }
+
+            @Override
+            public String backlogStatus() {
+                return "Backlog";
+            }
+
+            @Override
+            public String sprintField() {
+                return "customfield_10020";
             }
 
             @Override

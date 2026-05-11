@@ -128,7 +128,7 @@ class GitHubPollingJobBehaviorTest {
         GitHubPollingJob job = new GitHubPollingJob();
         ReflectionTestSupport.setField(job, "config", new GitHubConfig() {
             @Override public String apiUrl() { return "http://github"; }
-            @Override public String token() { return " "; }
+            @Override public Optional<String> token() { return Optional.of(" "); }
             @Override public String defaultBaseBranch() { return "main"; }
             @Override public String commitUserName() { return "PANDA"; }
             @Override public String commitUserEmail() { return "panda@example.com"; }
@@ -222,7 +222,7 @@ class GitHubPollingJobBehaviorTest {
         GitHubPollingJob job = new GitHubPollingJob();
         ReflectionTestSupport.setField(job, "config", new GitHubConfig() {
             @Override public String apiUrl() { return apiUrl; }
-            @Override public String token() { return "github-token"; }
+            @Override public Optional<String> token() { return Optional.of("github-token"); }
             @Override public String defaultBaseBranch() { return "main"; }
             @Override public String commitUserName() { return "PANDA"; }
             @Override public String commitUserEmail() { return "panda@example.com"; }
@@ -249,9 +249,10 @@ class GitHubPollingJobBehaviorTest {
         });
         ReflectionTestSupport.setField(job, "jiraConfig", new JiraConfig() {
             @Override public String baseUrl() { return "http://jira"; }
-            @Override public String userEmail() { return "panda@example.com"; }
             @Override public String apiToken() { return "jira-token"; }
-            @Override public String epicKey() { return "SCRUM"; }
+            @Override public String projectKey() { return "SCRUM"; }
+            @Override public Optional<String> serviceAccountId() { return Optional.empty(); }
+            @Override public String backlogStatus() { return "Backlog"; }
             @Override public String todoStatus() { return "To Do"; }
             @Override public String inProgressStatus() { return "In Progress"; }
             @Override public String blockedStatus() { return "Blocked"; }
@@ -260,6 +261,7 @@ class GitHubPollingJobBehaviorTest {
             @Override public String doneStatus() { return "Done"; }
             @Override public int pollIntervalMinutes() { return 1; }
             @Override public int pollMaxResults() { return 100; }
+            @Override public String sprintField() { return "customfield_10020"; }
         });
         ReflectionTestSupport.setField(job, "handleMergedPullRequestUseCase", mergedUseCase);
         ReflectionTestSupport.setField(job, "handleReviewCommentUseCase", reviewUseCase);

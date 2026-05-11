@@ -262,7 +262,7 @@ class GitHubCodeHostAdapterTest {
     void givenDuplicateAndBlankGitHubRepositoryMappings_whenPANDAListsAccessibleRepositories_thenOnlyDistinctUsableRepositoriesRemain() {
         GitHubConfig config = new GitHubConfig() {
             @Override public String apiUrl() { return "http://github"; }
-            @Override public String token() { return "github-token"; }
+            @Override public Optional<String> token() { return Optional.of("github-token"); }
             @Override public String defaultBaseBranch() { return "main"; }
             @Override public String commitUserName() { return "PANDA"; }
             @Override public String commitUserEmail() { return "panda@example.com"; }
@@ -423,8 +423,8 @@ class GitHubCodeHostAdapterTest {
             }
 
             @Override
-            public String token() {
-                return "github-token";
+            public Optional<String> token() {
+                return Optional.of("github-token");
             }
 
             @Override
@@ -472,7 +472,7 @@ class GitHubCodeHostAdapterTest {
     private GitHubCodeHostAdapter adapter(String apiUrl, Path workspaceRoot, GitHubConfig config) {
         GitHubCodeHostAdapter adapter = new GitHubCodeHostAdapter();
         ReflectionTestSupport.setField(adapter, "config", config);
-        ReflectionTestSupport.setField(adapter, "tokenProvider", new GitHubPatTokenProvider(config.token()));
+        ReflectionTestSupport.setField(adapter, "tokenProvider", new GitHubPatTokenProvider(config.token().orElse("")));
         WorkspaceLayoutService workspaceLayoutService = new WorkspaceLayoutService();
         ReflectionTestSupport.setField(workspaceLayoutService, "config", new ApplicationConfig() {
             @Override

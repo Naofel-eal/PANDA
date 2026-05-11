@@ -62,7 +62,7 @@ public class GitHubPollingJob {
         concurrentExecution = Scheduled.ConcurrentExecution.SKIP
     )
     void pollOpenPullRequests() {
-        if (isBlank(config.token()) && config.appId().isEmpty()) return;
+        if (config.token().filter(t -> !t.isBlank()).isEmpty() && config.appId().isEmpty()) return;
         List<String> repositories = codeHostPort.configuredRepositories();
         if (repositories.isEmpty()) return;
 

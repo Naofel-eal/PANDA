@@ -15,5 +15,5 @@ public interface CodeHostPort {
 
     PreparedWorkspace prepareWorkspace(PrepareWorkspaceCommand command);
 
-    void resetWorkspace(ResetWorkspaceCommand command);
+    default void resetWorkspace(ResetWorkspaceCommand command) {}
 }
