@@ -13,12 +13,22 @@ public record WorkItem(
     String url,
     List<String> labels,
     List<String> repositories,
-    Instant updatedAt
+    Instant updatedAt,
+    List<WorkItemAttachment> attachments
 ) {
+
+    public WorkItem(
+        String key, String type, String title, String description,
+        String status, String url, List<String> labels,
+        List<String> repositories, Instant updatedAt
+    ) {
+        this(key, type, title, description, status, url, labels, repositories, updatedAt, List.of());
+    }
 
     public WorkItem {
         labels = labels == null ? List.of() : List.copyOf(labels);
         repositories = repositories == null ? List.of() : List.copyOf(repositories);
+        attachments = attachments == null ? List.of() : List.copyOf(attachments);
     }
 
     public boolean isEligible() {
