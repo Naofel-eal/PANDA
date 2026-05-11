@@ -34,8 +34,19 @@ public class PublishCodeChangesUseCase {
     public void execute(Workflow workflow, AgentEvent event, boolean skipTransitionToReview) {
         try {
             PublishCodeChangesCommand publishCommand = buildPublishCommand(workflow, event);
+            LOG.infof(
+                "Publish command: ticket=%s, repositories=%s, workItemTitle=%s",
+                publishCommand.workItemKey(), publishCommand.repositories(), publishCommand.workItemTitle()
+            );
             List<CodeChangeRef> codeChanges = codeHostPort.publish(publishCommand);
             LOG.infof("Published %d pull request(s) for ticket %s", codeChanges.size(), workflow.ticketKey());
+
+            for (CodeChangeRef codeChange : codeChanges) {
+                LOG.infof(
+                    "Published PR: repository=%s, branch=%s, externalId=%s, url=%s",
+                    codeChange.repository(), codeChange.sourceBranch(), codeChange.externalId(), codeChange.url()
+                );
+            }
 
             for (CodeChangeRef codeChange : codeChanges) {
                 workflowHolder.addPublishedPR(codeChange);
