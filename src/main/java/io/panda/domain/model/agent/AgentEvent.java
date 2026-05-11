@@ -20,6 +20,8 @@ import lombok.experimental.Accessors;
 @Accessors(fluent = true)
 public final class AgentEvent {
 
+    public static final String REASON_ALREADY_IMPLEMENTED = "ALREADY_IMPLEMENTED";
+
     private final String eventId;
     private final UUID workflowId;
     private final UUID agentRunId;
