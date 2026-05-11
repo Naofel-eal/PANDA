@@ -10,9 +10,11 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.math.BigInteger;
 import java.security.KeyFactory;
 import java.security.interfaces.RSAPrivateKey;
 import java.security.spec.PKCS8EncodedKeySpec;
+import java.security.spec.RSAPrivateCrtKeySpec;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Base64;
@@ -53,8 +55,10 @@ public class GitHubAppTokenProvider implements GitHubTokenProvider {
     @Override
     public synchronized String getToken() {
         if (cachedToken != null && Instant.now().isBefore(tokenExpiresAt.minus(TOKEN_REFRESH_MARGIN))) {
+            LOG.debugf("GitHub App token cached, expires at %s", tokenExpiresAt);
             return cachedToken;
         }
+        LOG.infof("Refreshing GitHub App token (current expires at %s)", tokenExpiresAt);
         refreshInstallationToken();
         return cachedToken;
     }
@@ -109,15 +113,81 @@ public class GitHubAppTokenProvider implements GitHubTokenProvider {
         }
     }
 
-    private static RSAPrivateKey parsePrivateKey(String pem) {
+    private static RSAPrivateKey parsePrivateKey(String rawPem) {
+        String pem = rawPem.replace("\\n", "\n");
         try {
-            String stripped = PEM_STRIP.matcher(pem).replaceAll("").replaceAll("\\s", "");
-            byte[] decoded = Base64.getDecoder().decode(stripped);
-            PKCS8EncodedKeySpec spec = new PKCS8EncodedKeySpec(decoded);
+            if (pem.contains("BEGIN RSA PRIVATE KEY")) {
+                String base64 = pem
+                    .replace("-----BEGIN RSA PRIVATE KEY-----", "")
+                    .replace("-----END RSA PRIVATE KEY-----", "")
+                    .replaceAll("\\s", "");
+                byte[] der = Base64.getDecoder().decode(base64);
+                return parsePkcs1(der);
+            }
+
+            String base64 = pem
+                .replace("-----BEGIN PRIVATE KEY-----", "")
+                .replace("-----END PRIVATE KEY-----", "")
+                .replaceAll("\\s", "");
+            byte[] der = Base64.getDecoder().decode(base64);
+            PKCS8EncodedKeySpec spec = new PKCS8EncodedKeySpec(der);
             KeyFactory factory = KeyFactory.getInstance("RSA");
             return (RSAPrivateKey) factory.generatePrivate(spec);
-        } catch (Exception exception) {
-            throw new IllegalStateException("Unable to parse GitHub App private key PEM", exception);
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to parse GitHub App private key", e);
+        }
+    }
+
+    private static RSAPrivateKey parsePkcs1(byte[] der) throws Exception {
+        DerParser parser = new DerParser(der);
+        parser.readSequence();
+        parser.readInteger(); // version
+        BigInteger n = parser.readInteger();
+        BigInteger e = parser.readInteger();
+        BigInteger d = parser.readInteger();
+        BigInteger p = parser.readInteger();
+        BigInteger q = parser.readInteger();
+        BigInteger dp = parser.readInteger();
+        BigInteger dq = parser.readInteger();
+        BigInteger qi = parser.readInteger();
+        RSAPrivateCrtKeySpec spec = new RSAPrivateCrtKeySpec(n, e, d, p, q, dp, dq, qi);
+        return (RSAPrivateKey) KeyFactory.getInstance("RSA").generatePrivate(spec);
+    }
+
+    private static class DerParser {
+        private final byte[] data;
+        private int pos;
+
+        DerParser(byte[] data) {
+            this.data = data;
+            this.pos = 0;
+        }
+
+        void readSequence() {
+            int tag = data[pos++] & 0xFF;
+            if (tag != 0x30) throw new IllegalArgumentException("Expected SEQUENCE tag 0x30, got 0x" + Integer.toHexString(tag));
+            readLength();
+        }
+
+        BigInteger readInteger() {
+            int tag = data[pos++] & 0xFF;
+            if (tag != 0x02) throw new IllegalArgumentException("Expected INTEGER tag 0x02, got 0x" + Integer.toHexString(tag));
+            int length = readLength();
+            byte[] value = new byte[length];
+            System.arraycopy(data, pos, value, 0, length);
+            pos += length;
+            return new BigInteger(1, value);
+        }
+
+        private int readLength() {
+            int firstByte = data[pos++] & 0xFF;
+            if (firstByte < 0x80) return firstByte;
+            int numBytes = firstByte & 0x7F;
+            int length = 0;
+            for (int i = 0; i < numBytes; i++) {
+                length = (length << 8) | (data[pos++] & 0xFF);
+            }
+            return length;
         }
     }
 }
