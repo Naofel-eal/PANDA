@@ -67,9 +67,17 @@ public class HttpAgentRuntimeClient implements AgentRuntimePort {
         try {
             HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
             if (response.statusCode() >= 400) {
+                LOG.errorf(
+                    "Agent runtime HTTP error: %s — HTTP %d, body=%s",
+                    failureMessage, response.statusCode(),
+                    response.body().length() > 500 ? response.body().substring(0, 500) : response.body()
+                );
                 throw new AgentRuntimeException(failureMessage + ": HTTP " + response.statusCode() + " - " + response.body());
             }
+            LOG.debugf("Agent runtime call succeeded: %s %s — HTTP %d",
+                request.method(), request.uri(), response.statusCode());
         } catch (IOException e) {
+            LOG.errorf(e, "Agent runtime connection error: %s — %s %s", failureMessage, request.method(), request.uri());
             throw new AgentRuntimeException(failureMessage, e);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
