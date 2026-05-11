@@ -297,8 +297,8 @@ function logStdoutLine(run, line) {
   if (!trimmed) return
   try {
     const entry = JSON.parse(trimmed)
-    if (entry.type === "text") {
-      const preview = String(entry.text ?? "").slice(0, 200).replace(/\n/g, " ")
+    if (entry.type === "text" || entry.type === "assistant") {
+      const preview = String(entry.text ?? entry.content ?? "").slice(0, 200).replace(/\n/g, " ")
       if (preview) console.log(`[agent:${run.agentRunId.slice(0, 8)}] [text] ${preview}`)
       return
     }
@@ -310,10 +310,10 @@ function logStdoutLine(run, line) {
       console.log(`[agent:${run.agentRunId.slice(0, 8)}] [tool_use] ${toolName} (${status}) — ${inputPreview}`)
       return
     }
-    if (entry.type === "tool_result") {
-      const toolName = entry.part?.tool ?? "?"
+    if (entry.type === "tool_result" || entry.type === "result") {
+      const toolName = entry.part?.tool ?? entry.name ?? "?"
       const status = entry.part?.state?.status ?? "?"
-      const output = entry.part?.state?.output ?? entry.content ?? ""
+      const output = entry.part?.state?.output ?? entry.output ?? entry.content ?? ""
       const outputPreview = String(output).slice(0, 200)
       console.log(`[agent:${run.agentRunId.slice(0, 8)}] [tool_result] ${toolName} (${status}) → ${outputPreview}`)
       return
@@ -460,11 +460,18 @@ async function handleProcessExit(run, code, signal) {
 
 async function startRun(command, response) {
   if (activeRun) {
-    json(response, 409, {
-      error: "another_run_is_active",
-      activeAgentRunId: activeRun.agentRunId
-    })
-    return
+    const state = await readStateFile(activeRun.stateFile)
+    if (state.terminalEventSent) {
+      console.log(`[agent-runtime] Previous run ${activeRun.agentRunId} already sent terminal event; force-killing`)
+      activeRun.child.kill(ProcessSignal.SIGKILL)
+      activeRun = null
+    } else {
+      json(response, 409, {
+        error: "another_run_is_active",
+        activeAgentRunId: activeRun.agentRunId
+      })
+      return
+    }
   }
 
   if (command.type !== AgentCommandType.START_RUN) {
