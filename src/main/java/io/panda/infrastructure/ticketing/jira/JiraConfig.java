@@ -1,17 +1,17 @@
 package io.panda.infrastructure.ticketing.jira;
 
 import io.smallrye.config.ConfigMapping;
+import io.smallrye.config.WithDefault;
+import java.util.Optional;
 
 @ConfigMapping(prefix = "panda.jira")
 public interface JiraConfig {
 
     String baseUrl();
 
-    String userEmail();
-
     String apiToken();
 
-    String epicKey();
+    String backlogStatus();
 
     String todoStatus();
 
@@ -28,4 +28,11 @@ public interface JiraConfig {
     int pollIntervalMinutes();
 
     int pollMaxResults();
+
+    @WithDefault("customfield_10020")
+    String sprintField();
+
+    Optional<String> serviceAccountId();
+
+    String projectKey();
 }
