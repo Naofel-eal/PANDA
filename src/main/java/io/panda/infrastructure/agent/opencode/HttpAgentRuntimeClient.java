@@ -44,7 +44,7 @@ public class HttpAgentRuntimeClient implements AgentRuntimePort {
         HttpRequest request = HttpRequest.newBuilder()
             .uri(URI.create(config.baseUrl() + "/internal/agent-runs"))
             .header("Content-Type", "application/json")
-            .timeout(Duration.ofSeconds(15))
+            .timeout(Duration.ofSeconds(90))
             .POST(HttpRequest.BodyPublishers.ofString(jsonCodec.toJson(payload)))
             .build();
 

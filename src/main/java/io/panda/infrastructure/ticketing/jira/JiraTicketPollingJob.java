@@ -44,6 +44,10 @@ public class JiraTicketPollingJob {
     private static final String PANDA_COMMENT_MARKER = "PANDA marked this ticket as blocked";
     private static final String PANDA_READY_FOR_VALIDATION_MARKER = "Pull request merged and ready for validation.";
     private static final long ELIGIBILITY_REASSESSMENT_GRACE_SECONDS = 60;
+    private static final List<String> VALIDATION_COMMENT_PATTERNS = List.of(
+        "validated", "approved", "lgtm", "looks good", "validé", "c'est bon",
+        "ticket is validated", "ticket validated", "bien joué", "good job", "well done"
+    );
 
     private final HttpClient client = HttpClient.newBuilder().connectTimeout(HTTP_CONNECT_TIMEOUT).build();
     private String pandaAccountId;
@@ -141,10 +145,13 @@ public class JiraTicketPollingJob {
         WorkItem workItem = jiraPayloadMapper.toWorkItem(issue);
         List<IncomingComment> comments = safeLoadComments(workItem.key());
 
-        boolean hasNewComment = hasNewUserCommentSinceLastPANDAComment(comments, this::isPANDAComment);
-        boolean ticketUpdatedAfterLastComment = !hasNewComment && wasTicketUpdatedAfterLastPANDAComment(issue, comments);
+        boolean isValidateStatus = config.validateStatus().equalsIgnoreCase(expectedStatus);
+        boolean hasNewComment = hasNewCorrectionCommentSinceLastPANDAComment(comments, this::isPANDAComment);
+        boolean ticketUpdatedAfterLastComment = !isValidateStatus
+            && !hasNewComment && wasTicketUpdatedAfterLastPANDAComment(issue, comments);
 
         if (!hasNewComment && !ticketUpdatedAfterLastComment) {
+            LOG.debugf("No resume trigger for ticket %s in status '%s' (no new correction comment, no update after PANDA comment)", workItem.key(), expectedStatus);
             return false;
         }
 
@@ -155,9 +162,10 @@ public class JiraTicketPollingJob {
             return false;
         }
 
-        String reason = hasNewComment ? "new user comment detected" : "ticket updated after last PANDA comment";
-        LOG.infof("Resuming ticket %s from status '%s' — %s", workItem.key(), expectedStatus, reason);
-        resumeWorkflowUseCase.execute(JiraSystem.ID, workItem, comments, phase);
+        WorkItem effectiveWorkItem = freshTicket != null ? freshTicket : workItem;
+        String reason = hasNewComment ? "new correction comment detected" : "ticket updated after last PANDA comment";
+        LOG.infof("Resuming ticket %s from status '%s' — %s (comments=%d)", effectiveWorkItem.key(), expectedStatus, reason, comments.size());
+        resumeWorkflowUseCase.execute(JiraSystem.ID, effectiveWorkItem, comments, phase);
         return true;
     }
 
@@ -193,6 +201,29 @@ public class JiraTicketPollingJob {
         return latestPANDA
             .map(d -> commentTimestamp(latestUser.get()).isAfter(commentTimestamp(d)))
             .orElse(true);
+    }
+
+    static boolean hasNewCorrectionCommentSinceLastPANDAComment(
+        List<IncomingComment> comments, Predicate<IncomingComment> isPANDAComment
+    ) {
+        if (comments == null || comments.isEmpty()) return false;
+        Optional<IncomingComment> latestPANDA = comments.stream()
+            .filter(isPANDAComment)
+            .max(Comparator.comparing(JiraTicketPollingJob::commentTimestamp));
+        Optional<IncomingComment> latestUserCorrection = comments.stream()
+            .filter(c -> c != null && c.body() != null && !isPANDAComment.test(c))
+            .filter(c -> !isValidationComment(c))
+            .max(Comparator.comparing(JiraTicketPollingJob::commentTimestamp));
+        if (latestUserCorrection.isEmpty()) return false;
+        return latestPANDA
+            .map(d -> commentTimestamp(latestUserCorrection.get()).isAfter(commentTimestamp(d)))
+            .orElse(true);
+    }
+
+    static boolean isValidationComment(IncomingComment comment) {
+        if (comment == null || comment.body() == null) return false;
+        String normalized = comment.body().toLowerCase().strip();
+        return VALIDATION_COMMENT_PATTERNS.stream().anyMatch(normalized::contains);
     }
 
     private boolean shouldSkipIneligibleTicket(Map<String, Object> issue, List<IncomingComment> comments) {
