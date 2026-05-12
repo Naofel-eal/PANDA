@@ -179,7 +179,8 @@ class JiraTicketPollingJobBehaviorTest {
 
             RecordingTicketingPort ticketingPort = new RecordingTicketingPort();
             ticketingPort.commentsByKey.put("SCRUM-73", List.of(
-                comment("panda-account", "Pull request merged and ready for validation.", "2026-04-09T10:00:00Z")
+                comment("panda-account", "Pull request merged and ready for validation.", "2026-04-09T10:00:00Z"),
+                comment("user-1", "I tested it and found an issue with the layout", "2026-04-09T10:05:00Z")
             ));
             RecordingResumeWorkflowUseCase resumeUseCase = new RecordingResumeWorkflowUseCase();
             JiraTicketPollingJob job = job(server.baseUrl(), ticketingPort, new IdleWorkflowHolder(), new RecordingStartInfoCollectionUseCase(), resumeUseCase, new RecordingCancelStaleRunUseCase());
